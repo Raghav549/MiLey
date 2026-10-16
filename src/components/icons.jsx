@@ -287,3 +287,21 @@ export const SmileIcon = (p) => (
 export const SeatIcon = (p) => (
   <svg {...base(p)}><path d="M6.5 12V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v6"/><path d="M5 12h14a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-2a1 1 0 0 1 1-1Z"/><path d="M6 16v3"/><path d="M18 16v3"/></svg>
 )
+
+export const MusicNoteIcon = (p) => (
+  <svg {...base(p)}><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+)
+
+export const SparkleIcon = (p) => (
+  <svg {...base(p)}><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z"/></svg>
+)
+
+export const HandIcon = (p) => (
+  <svg {...base(p)}><path d="M18 11V6a2 2 0 0 0-4 0v4"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V5a2 2 0 0 0-4 0v9"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-5.9-2.4L3.4 16.9a2 2 0 0 1 2.8-2.8L8 16"/></svg>
+)
+
+export const EqIcon = SlidersIcon
+export const ClockIcon = TimerIcon
+export const RadioIcon = LiveIcon
+export const QrIcon = QRIcon
+

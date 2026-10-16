@@ -1,0 +1,26 @@
+{
+  "appId": "space.mileymusic.app",
+  "appName": "MiLey",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "hostname": "mileymusic.space",
+    "androidScheme": "https",
+    "allowNavigation": [
+      "mileymusic.space",
+      "*.mileymusic.space",
+      "*.supabase.co"
+    ]
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 2400,
+      "launchAutoHide": true,
+      "backgroundColor": "#0B0B0B",
+      "androidScaleType": "CENTER_CROP",
+      "showSpinner": false,
+      "splashFullScreen": true,
+      "splashImmersive": true
+    }
+  }
+}

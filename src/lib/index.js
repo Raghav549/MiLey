@@ -1,30 +1,40 @@
 /**
- * MiLey Platform - Main Export
- * Production-ready full-stack music platform backend
+ * MiLey Platform - Main Backend SDK Export
+ * Official Domain: https://mileymusic.space
  */
 
-// Core modules
-export { supabase, getSession, getUser, onAuthStateChange } from './supabaseClient'
-export { auth, isAuthenticated, getCurrentUser, getCurrentUserAsync, signIn, signUp, signOut, signInWithGoogle, signInWithApple, verifyOtp, resetPassword, updatePassword, updateUserProfile, onAuthChange, isAppOwner, getAuthToken, refreshSession, adoptSession } from './auth'
-export { db, select, get, insert, update, upsert, remove as delete, count, increment, search, subscribe, selectShared, getShared, insertShared, updateShared, upsertShared, deleteShared, countShared, incrementShared, searchShared, subscribeShared, batchInsert, batchUpdate, batchDelete } from './db'
-export { storage, upload, uploadResumable, remove as storageRemove, getPublicUrl, getSignedUrl, list, download, uploadSong, uploadCover, uploadBanner, uploadProfileImage, uploadDocument } from './storage'
-export { realtime, presence, subscribeToChanges, broadcast, listenToBroadcasts, sendVoiceSignal, listenToVoiceSignals } from './realtime'
-export { social, searchUsers, getUserProfile, followUser, unfollowUser, isFollowing, getFollowersCount, getFollowingCount, sendMessage, getMessages, markMessageRead, getUnreadCount, getOrCreateDMChannel, getUserChannels, joinChannel, leaveChannel, blockUser, unblockUser, getBlockedUsers } from './social'
-export { messaging, sendTypingIndicator, listenToTyping, markChannelRead, deleteMessage, editMessage, sendMediaMessage, getMessageReactions, addReaction, removeReaction } from './messaging'
-export { user, getAppUserId, getAnonymousId, getCurrentUserProfile, updateCurrentUserProfile, getUserFollowerCount, getUserFollowingCount, checkIfFollowing, toggleFollow, getUserTracks, getUserPlaylists, getUserLikedTracksCount, verifySession, refreshUserSession, signOutCurrentUser } from './user'
-export { useLive, useLiveShared, usePresence } from './useLive'
+import { supabase, getSession, getUser, onAuthStateChange, isSupabaseConfigured, APP_DOMAIN, MILEY_HOST, getAppUrl } from './supabaseClient'
+import { auth, isAuthenticated, getCurrentUser, getCurrentUserAsync, signIn, signUp, signOut, signInWithGoogle, signInWithApple, verifyOtp, resetPassword, updatePassword, updateUserProfile, onAuthChange, isAppOwner, setAdminMode, getAuthToken, refreshSession, adoptSession } from './auth'
+import { db, select, get, insert, update, upsert, remove as deleteRecord, count, increment, search, subscribe, selectShared, getShared, insertShared, updateShared, upsertShared, deleteShared, countShared, incrementShared, searchShared, subscribeShared, batchInsert, batchUpdate, batchDelete } from './db'
+import { storage, upload, uploadResumable, remove as storageRemove, getPublicUrl, getSignedUrl, list, download, uploadSong, uploadCover, uploadBanner, uploadSongThemeAsset, uploadProfileImage, uploadDocument } from './storage'
+import { realtime, presence, subscribeToChanges, broadcast, listenToBroadcasts, sendVoiceSignal, listenToVoiceSignals } from './realtime'
+import { social, searchUsers, getUserProfile, followUser, unfollowUser, isFollowing, getFollowersCount, getFollowingCount, sendMessage, getMessages, markMessageRead, getUnreadCount, getOrCreateDMChannel, getUserChannels, joinChannel, leaveChannel, blockUser, unblockUser, getBlockedUsers } from './social'
+import { messaging, sendTypingIndicator, listenToTyping, markChannelRead, deleteMessage, editMessage, sendMediaMessage, getMessageReactions, addReaction, removeReaction } from './messaging'
+import { user, getAppUserId, getAnonymousId, getCurrentUserProfile, updateCurrentUserProfile, getUserFollowerCount, getUserFollowingCount, checkIfFollowing, toggleFollow, getUserTracks, getUserPlaylists, getUserLikedTracksCount, verifySession, refreshUserSession, signOutCurrentUser } from './user'
+import { useLive, useLiveShared, usePresence } from './useLive'
 
-// Default export with all modules
+export {
+  supabase, getSession, getUser, onAuthStateChange, isSupabaseConfigured, APP_DOMAIN, MILEY_HOST, getAppUrl,
+  auth, isAuthenticated, getCurrentUser, getCurrentUserAsync, signIn, signUp, signOut, signInWithGoogle, signInWithApple, verifyOtp, resetPassword, updatePassword, updateUserProfile, onAuthChange, isAppOwner, setAdminMode, getAuthToken, refreshSession, adoptSession,
+  db, select, get, insert, update, upsert, deleteRecord as delete, count, increment, search, subscribe, selectShared, getShared, insertShared, updateShared, upsertShared, deleteShared, countShared, incrementShared, searchShared, subscribeShared, batchInsert, batchUpdate, batchDelete,
+  storage, upload, uploadResumable, storageRemove, getPublicUrl, getSignedUrl, list, download, uploadSong, uploadCover, uploadBanner, uploadSongThemeAsset, uploadProfileImage, uploadDocument,
+  realtime, presence, subscribeToChanges, broadcast, listenToBroadcasts, sendVoiceSignal, listenToVoiceSignals,
+  social, searchUsers, getUserProfile, followUser, unfollowUser, isFollowing, getFollowersCount, getFollowingCount, sendMessage, getMessages, markMessageRead, getUnreadCount, getOrCreateDMChannel, getUserChannels, joinChannel, leaveChannel, blockUser, unblockUser, getBlockedUsers,
+  messaging, sendTypingIndicator, listenToTyping, markChannelRead, deleteMessage, editMessage, sendMediaMessage, getMessageReactions, addReaction, removeReaction,
+  user, getAppUserId, getAnonymousId, getCurrentUserProfile, updateCurrentUserProfile, getUserFollowerCount, getUserFollowingCount, checkIfFollowing, toggleFollow, getUserTracks, getUserPlaylists, getUserLikedTracksCount, verifySession, refreshUserSession, signOutCurrentUser,
+  useLive, useLiveShared, usePresence,
+}
+
 export default {
-  supabase: (await import('./supabaseClient')).supabase,
-  auth: (await import('./auth')).auth,
-  db: (await import('./db')).db,
-  storage: (await import('./storage')).storage,
-  realtime: (await import('./realtime')).realtime,
-  social: (await import('./social')).social,
-  messaging: (await import('./messaging')).messaging,
-  user: (await import('./user')).user,
-  useLive: (await import('./useLive')).useLive,
-  useLiveShared: (await import('./useLive')).useLiveShared,
-  usePresence: (await import('./useLive')).usePresence,
+  supabase,
+  auth,
+  db,
+  storage,
+  realtime,
+  social,
+  messaging,
+  user,
+  useLive,
+  useLiveShared,
+  usePresence,
 }

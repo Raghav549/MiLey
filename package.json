@@ -1,12 +1,14 @@
 {
-  "name": "whacka-pwa-template",
+  "name": "miley-music-platform",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.0.0",
+  "homepage": "https://mileymusic.space",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview --host 0.0.0.0",
+    "android:sync": "vite build && mkdir -p android/app/src/main/assets/public && cp -r dist/* android/app/src/main/assets/public/"
   },
   "dependencies": {
     "react": "^18.2.0",

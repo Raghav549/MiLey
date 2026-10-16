@@ -1,243 +1,244 @@
 /**
  * MiLey Platform - Realtime Module
- * Supabase Realtime for presence, messaging, voice room signalling
+ * Hybrid Supabase Realtime + Cross-Tab BroadcastChannel Presence & Signalling
  */
 
-import { supabase } from './supabaseClient'
+import { supabase, isSupabaseConfigured } from './supabaseClient'
 import { auth } from './auth'
+import { db } from './db'
 
-// Presence channel management
 const presenceChannels = new Map()
+const rtBus = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('miley_presence_bus_v2') : null
+const localPresenceState = new Map() // channelName -> Map<userId, info>
 
-// Create a presence channel for online status
-export function presence(channelName, userInfo) {
+export function presence(channelName, userInfo = {}) {
   const user = auth.getCurrentUser()
-  if (!user) return createMockPresence()
+  if (!user || !channelName) return createNoopPresence()
 
   const channelId = `presence:${channelName}`
-  
-  // Check if we already have this channel
-  if (presenceChannels.has(channelId)) {
-    const existing = presenceChannels.get(channelId)
-    existing.updateInfo(userInfo)
-    return existing
-  }
-
-  // Create new presence channel
-  const channel = supabase.channel(channelName, {
-    config: {
-      presence: {
-        key: channelName,
-      },
-    },
-  })
-
   let onSyncCallback = null
   let onJoinCallback = null
   let onLeaveCallback = null
-  let currentUsers = new Map()
 
-  channel.on('presence', { event: 'sync' }, () => {
-    const state = channel.presenceState()
-    const users = []
-    
-    Object.values(state).forEach(presences => {
-      presences.forEach(p => {
-        if (p.userid) {
-          users.push({
-            id: p.userid,
-            userId: p.userid,
-            ...p.state,
+  if (!localPresenceState.has(channelName)) {
+    localPresenceState.set(channelName, new Map())
+  }
+  const roomMap = localPresenceState.get(channelName)
+  const selfEntry = {
+    id: user.id,
+    userId: user.id,
+    ...userInfo,
+    updatedAt: Date.now(),
+  }
+  roomMap.set(user.id, selfEntry)
+
+  const emitSync = () => {
+    if (onSyncCallback) {
+      onSyncCallback([...roomMap.values()])
+    }
+  }
+
+  let busHandler = null
+  if (rtBus) {
+    busHandler = (ev) => {
+      const msg = ev.data || {}
+      if (msg.channelName !== channelName) return
+      if (msg.type === 'join' || msg.type === 'update') {
+        const isNew = !roomMap.has(msg.entry.id)
+        roomMap.set(msg.entry.id, msg.entry)
+        if (isNew && onJoinCallback) onJoinCallback(msg.entry)
+        emitSync()
+      } else if (msg.type === 'leave') {
+        const left = roomMap.get(msg.userId)
+        roomMap.delete(msg.userId)
+        if (left && onLeaveCallback) onLeaveCallback(left)
+        emitSync()
+      }
+    }
+    rtBus.addEventListener('message', busHandler)
+    try { rtBus.postMessage({ channelName, type: 'join', entry: selfEntry }) } catch {}
+  }
+
+  let sbChannel = null
+  if (isSupabaseConfigured) {
+    try {
+      sbChannel = supabase.channel(channelName, {
+        config: { presence: { key: channelName } },
+      })
+
+      sbChannel.on('presence', { event: 'sync' }, () => {
+        const state = sbChannel.presenceState()
+        Object.values(state).forEach((presences) => {
+          presences.forEach((p) => {
+            if (p.userid) {
+              roomMap.set(p.userid, { id: p.userid, userId: p.userid, ...p })
+            }
           })
+        })
+        emitSync()
+      })
+
+      sbChannel.on('presence', { event: 'join' }, ({ newPresences }) => {
+        newPresences.forEach((p) => {
+          if (p.userid) {
+            const entry = { id: p.userid, userId: p.userid, ...p }
+            roomMap.set(p.userid, entry)
+            if (onJoinCallback) onJoinCallback(entry)
+          }
+        })
+        emitSync()
+      })
+
+      sbChannel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
+        leftPresences.forEach((p) => {
+          if (p.userid) {
+            roomMap.delete(p.userid)
+            if (onLeaveCallback) onLeaveCallback({ id: p.userid, userId: p.userid, ...p })
+          }
+        })
+        emitSync()
+      })
+
+      sbChannel.subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await sbChannel.track({ userid: user.id, ...userInfo })
         }
       })
-    })
-    
-    currentUsers = new Map(users.map(u => [u.id || u.userId, u]))
-    
-    if (onSyncCallback) {
-      onSyncCallback(users)
-    }
-  })
+    } catch {}
+  }
 
-  channel.on('presence', { event: 'join' }, ({ key, newPresences }) => {
-    newPresences.forEach(p => {
-      if (onJoinCallback && p.userid) {
-        onJoinCallback({
-          id: p.userid,
-          userId: p.userid,
-          ...p.state,
-        })
-      }
-    })
-  })
+  // Trigger initial sync asynchronously so callers can register .onSync() first
+  setTimeout(emitSync, 10)
 
-  channel.on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
-    leftPresences.forEach(p => {
-      if (onLeaveCallback && p.userid) {
-        onLeaveCallback({
-          id: p.userid,
-          userId: p.userid,
-          ...p.state,
-        })
-      }
-    })
-  })
-
-  // Subscribe and track presence
-  channel.subscribe(async (status) => {
-    if (status === 'SUBSCRIBED') {
-      await channel.track({
-        userid: user.id,
-        ...userInfo,
-      })
-    }
-  })
-
-  const presenceInstance = {
-    onSync: (callback) => {
-      onSyncCallback = callback
-      return presenceInstance
+  const instance = {
+    onSync: (cb) => {
+      onSyncCallback = cb
+      cb([...roomMap.values()])
+      return instance
     },
-    onJoin: (callback) => {
-      onJoinCallback = callback
-      return presenceInstance
+    onJoin: (cb) => {
+      onJoinCallback = cb
+      return instance
     },
-    onLeave: (callback) => {
-      onLeaveCallback = callback
-      return presenceInstance
+    onLeave: (cb) => {
+      onLeaveCallback = cb
+      return instance
     },
     updateInfo: (newInfo) => {
-      channel.track({
-        userid: user.id,
-        ...newInfo,
-      })
+      const updated = { id: user.id, userId: user.id, ...newInfo, updatedAt: Date.now() }
+      roomMap.set(user.id, updated)
+      emitSync()
+      if (rtBus) {
+        try { rtBus.postMessage({ channelName, type: 'update', entry: updated }) } catch {}
+      }
+      if (sbChannel) {
+        try { sbChannel.track({ userid: user.id, ...newInfo }) } catch {}
+      }
     },
     leave: () => {
-      channel.unsubscribe()
+      roomMap.delete(user.id)
+      if (rtBus && busHandler) {
+        try { rtBus.postMessage({ channelName, type: 'leave', userId: user.id }) } catch {}
+        rtBus.removeEventListener('message', busHandler)
+      }
+      if (sbChannel) {
+        try { sbChannel.unsubscribe() } catch {}
+      }
       presenceChannels.delete(channelId)
     },
   }
 
-  presenceChannels.set(channelId, presenceInstance)
-  return presenceInstance
+  presenceChannels.set(channelId, instance)
+  return instance
 }
 
-// Mock presence for when user is not authenticated
-function createMockPresence() {
-  return {
-    onSync: () => ({ onSync: () => null, onJoin: () => null, onLeave: () => null }),
-    onJoin: () => ({ onSync: () => null, onJoin: () => null, onLeave: () => null }),
-    onLeave: () => ({ onSync: () => null, onJoin: () => null, onLeave: () => null }),
+function createNoopPresence() {
+  const self = {
+    onSync: (cb) => { cb?.([]); return self },
+    onJoin: () => self,
+    onLeave: () => self,
     updateInfo: () => {},
     leave: () => {},
   }
+  return self
 }
 
-// Subscribe to database changes with realtime
 export function subscribeToChanges(table, callback, filters = {}) {
-  const user = auth.getCurrentUser()
-  if (!user) return () => {}
-
-  const channelName = `db:${table}:${Object.entries(filters).map(([k, v]) => `${k}=${v}`).join(':')}`
-  
-  const channel = supabase.channel(channelName)
-
-  channel.on(
-    'postgres_changes',
-    {
-      event: '*',
-      schema: 'public',
-      table: table,
-      ...filters,
-    },
-    (payload) => {
-      callback({
-        type: payload.eventType,
-        data: payload.new || payload.old,
-        oldData: payload.old,
-      })
-    }
-  )
-
-  channel.subscribe()
-
-  return () => {
-    supabase.removeChannel(channelName)
-  }
+  return db.subscribe(table, callback, filters)
 }
 
-// Broadcast message to a channel
 export async function broadcast(channelName, message) {
   const user = auth.getCurrentUser()
-  if (!user) throw new Error('Authentication required')
-
-  const channel = supabase.channel(channelName)
-  
-  try {
-    await channel.send({
-      type: 'broadcast',
-      event: 'message',
-      payload: {
-        ...message,
-        senderId: user.id,
-        timestamp: Date.now(),
-      },
-    })
-    return true
-  } catch (error) {
-    console.error('Broadcast error:', error)
-    throw error
+  const payload = {
+    ...message,
+    senderId: user?.id || 'anon',
+    timestamp: Date.now(),
   }
+  if (rtBus) {
+    try { rtBus.postMessage({ channelName, type: 'broadcast', payload }) } catch {}
+  }
+  if (isSupabaseConfigured) {
+    try {
+      await supabase.channel(channelName).send({
+        type: 'broadcast',
+        event: 'message',
+        payload,
+      })
+    } catch {}
+  }
+  return true
 }
 
-// Listen for broadcast messages
 export function listenToBroadcasts(channelName, callback) {
-  const channel = supabase.channel(channelName)
+  let busHandler = null
+  if (rtBus) {
+    busHandler = (ev) => {
+      const msg = ev.data || {}
+      if (msg.channelName === channelName && msg.type === 'broadcast') {
+        callback(msg.payload)
+      }
+    }
+    rtBus.addEventListener('message', busHandler)
+  }
 
-  channel.on('broadcast', { event: 'message' }, (payload) => {
-    callback(payload.payload)
-  })
-
-  channel.subscribe()
+  let sbChannel = null
+  if (isSupabaseConfigured) {
+    try {
+      sbChannel = supabase.channel(channelName)
+      sbChannel.on('broadcast', { event: 'message' }, (p) => callback(p.payload))
+      sbChannel.subscribe()
+    } catch {}
+  }
 
   return () => {
-    supabase.removeChannel(channelName)
+    if (rtBus && busHandler) rtBus.removeEventListener('message', busHandler)
+    if (sbChannel) supabase.removeChannel(sbChannel)
   }
 }
 
-// Voice room signalling helpers
 export async function sendVoiceSignal(roomId, signal) {
   const user = auth.getCurrentUser()
-  if (!user) throw new Error('Authentication required')
-
-  try {
-    const { error } = await supabase.from('voice_signals').insert({
-      room_id: roomId,
-      from_user_id: user.id,
-      to_user_id: signal.to,
-      signal_type: signal.type,
-      signal_data: signal.data,
-      created_at: new Date().toISOString(),
-    })
-
-    if (error) throw error
-    return true
-  } catch (error) {
-    console.error('Voice signal error:', error)
-    throw error
-  }
+  if (!user) return false
+  await db.insertShared('voice_sig', {
+    room: roomId,
+    from: user.id,
+    to: signal.to,
+    kind: signal.type,
+    sdp: typeof signal.data === 'string' ? signal.data : JSON.stringify(signal.data),
+    t: Date.now(),
+  })
+  return true
 }
 
 export function listenToVoiceSignals(roomId, callback) {
   const user = auth.getCurrentUser()
   if (!user) return () => {}
-
-  return subscribeToChanges('voice_signals', (payload) => {
-    if (payload.data.to_user_id === user.id && payload.data.room_id === roomId) {
-      callback(payload.data)
+  return db.subscribeShared('voice_sig', (payload) => {
+    const s = payload?.data
+    if (s && s.to === user.id && s.room === roomId) {
+      callback(s)
     }
-  }, { room_id: roomId })
+  })
 }
 
 export const realtime = {

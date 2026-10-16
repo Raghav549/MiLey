@@ -1,424 +1,295 @@
 /**
- * MiLey Platform - Social Module
- * Real Supabase implementation for follows, messaging, social features
+ * MiLey Platform - Social & Messaging Core Module
+ * Full support for user search, follows, DMs, group chats, and blocking
  */
 
-import { supabase } from './supabaseClient'
 import { auth } from './auth'
 import { db } from './db'
 
-// Search users by query
 export async function searchUsers(query) {
-  try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id, display_name as displayName, avatar_url as avatarUrl, custom_username as username')
-      .or(`display_name.ilike.%${query}%,custom_username.ilike.%${query}%`)
-      .limit(20)
-
-    if (error) throw error
-    return data || []
-  } catch (error) {
-    console.error('User search error:', error)
-    return []
-  }
+  const q = (query || '').trim().toLowerCase()
+  const profiles = await db.selectShared('profiles', {}, { limit: 300 })
+  const filtered = q
+    ? profiles.filter(
+        (p) =>
+          (p.displayName || '').toLowerCase().includes(q) ||
+          (p.customUsername || '').toLowerCase().includes(q) ||
+          (p.bio || '').toLowerCase().includes(q)
+      )
+    : profiles
+  return filtered.slice(0, 25).map((p) => ({
+    id: p.userId || p.id,
+    displayName: p.displayName || 'MiLey User',
+    avatarUrl: p.avatarUrl || '',
+    username: p.customUsername || '',
+    verified: !!p.verified,
+    artistBadge: p.artistBadge || '',
+  }))
 }
 
-// Get user profile by ID
 export async function getUserProfile(userId) {
-  try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('user_id', userId)
-      .single()
-
-    if (error) throw error
-    return data
-  } catch (error) {
-    console.error('Get profile error:', error)
-    return null
-  }
+  if (!userId) return null
+  return db.getShared('profiles', userId)
 }
 
-// Follow a user
-export async function followUser(targetId) {
+export async function followUser(targetId, meta = {}) {
   const user = auth.getCurrentUser()
   if (!user) throw new Error('Authentication required')
+  const id = `${user.id}:${targetId}`
+  const targetProfile = await db.getShared('profiles', targetId)
+  const myProfile = await db.getShared('profiles', user.id)
 
-  try {
-    const { data, error } = await supabase
-      .from('follows')
-      .insert({
-        follower_id: user.id,
-        target_id: targetId,
-        created_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-    return data
-  } catch (error) {
-    console.error('Follow error:', error)
-    throw error
-  }
+  const record = await db.upsertShared(
+    'follows',
+    {
+      followerId: user.id,
+      targetId,
+      targetType: meta.targetType || 'artist',
+      targetName: meta.targetName || targetProfile?.displayName || 'MiLey User',
+      targetAvatar: meta.targetAvatar || targetProfile?.avatarUrl || '',
+      targetUsername: meta.targetUsername || targetProfile?.customUsername || '',
+      followerName: myProfile?.displayName || user.displayName || 'MiLey User',
+      followerAvatar: myProfile?.avatarUrl || user.avatarUrl || '',
+    },
+    id,
+    { visibleTo: 'public' }
+  )
+  return record
 }
 
-// Unfollow a user
 export async function unfollowUser(targetId) {
   const user = auth.getCurrentUser()
   if (!user) throw new Error('Authentication required')
-
-  try {
-    const { error } = await supabase
-      .from('follows')
-      .delete()
-      .eq('follower_id', user.id)
-      .eq('target_id', targetId)
-
-    if (error) throw error
-    return true
-  } catch (error) {
-    console.error('Unfollow error:', error)
-    throw error
-  }
+  const id = `${user.id}:${targetId}`
+  await db.deleteShared('follows', id)
+  return true
 }
 
-// Check if following
 export async function isFollowing(followerId, targetId) {
-  try {
-    const { data, error } = await supabase
-      .from('follows')
-      .select('id')
-      .eq('follower_id', followerId)
-      .eq('target_id', targetId)
-      .single()
-
-    if (error && error.code !== 'PGRST116') throw error
-    return !!data
-  } catch (error) {
-    console.error('Is following error:', error)
-    return false
-  }
+  if (!followerId || !targetId) return false
+  const rows = await db.selectShared('follows', { followerId, targetId }, { limit: 1 })
+  return rows.length > 0
 }
 
-// Get followers count
-export async function getFollowersCount(userId) {
-  try {
-    const { count, error } = await supabase
-      .from('follows')
-      .select('*', { count: 'exact', head: true })
-      .eq('target_id', userId)
-
-    if (error) throw error
-    return count || 0
-  } catch (error) {
-    console.error('Followers count error:', error)
-    return 0
-  }
+export async function getFollowersCount(targetId) {
+  return db.countShared('follows', { targetId })
 }
 
-// Get following count
-export async function getFollowingCount(userId) {
-  try {
-    const { count, error } = await supabase
-      .from('follows')
-      .select('*', { count: 'exact', head: true })
-      .eq('follower_id', userId)
-
-    if (error) throw error
-    return count || 0
-  } catch (error) {
-    console.error('Following count error:', error)
-    return 0
-  }
+export async function getFollowingCount(followerId) {
+  return db.countShared('follows', { followerId })
 }
 
-// Send direct message
-export async function sendMessage(channelId, text, options = {}) {
-  const user = auth.getCurrentUser()
-  if (!user) throw new Error('Authentication required')
-
-  try {
-    const { data, error } = await supabase
-      .from('messages')
-      .insert({
-        channel_id: channelId,
-        sender_id: user.id,
-        text: text,
-        type: options.type || 'text',
-        reply_to: options.replyTo || null,
-        edited: false,
-        created_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-    
-    // Update last message in channel
-    await supabase
-      .from('channels')
-      .update({
-        last_message_at: new Date().toISOString(),
-        last_message_text: text,
-      })
-      .eq('id', channelId)
-
-    return data
-  } catch (error) {
-    console.error('Send message error:', error)
-    throw error
-  }
-}
-
-// Get messages for a channel
-export async function getMessages(channelId, options = {}) {
-  const { limit = 50, before = null } = options
-
-  try {
-    let query = supabase
-      .from('messages')
-      .select('*, sender:sender_id(id, display_name, avatar_url)')
-      .eq('channel_id', channelId)
-      .order('created_at', { ascending: false })
-      .limit(limit)
-
-    if (before) {
-      query = query.lt('created_at', before)
-    }
-
-    const { data, error } = await query
-
-    if (error) throw error
-    return data || []
-  } catch (error) {
-    console.error('Get messages error:', error)
-    return []
-  }
-}
-
-// Mark message as read
-export async function markMessageRead(messageId) {
-  const user = auth.getCurrentUser()
-  if (!user) throw new Error('Authentication required')
-
-  try {
-    const { error } = await supabase
-      .from('message_reads')
-      .upsert({
-        message_id: messageId,
-        user_id: user.id,
-        read_at: new Date().toISOString(),
-      })
-
-    if (error) throw error
-    return true
-  } catch (error) {
-    console.error('Mark read error:', error)
-    throw error
-  }
-}
-
-// Get unread message count for a channel
-export async function getUnreadCount(channelId) {
-  const user = auth.getCurrentUser()
-  if (!user) return 0
-
-  try {
-    // Get last read timestamp
-    const { data: lastRead } = await supabase
-      .from('message_reads')
-      .select('read_at')
-      .eq('channel_id', channelId)
-      .eq('user_id', user.id)
-      .order('read_at', { ascending: false })
-      .single()
-
-    // Count messages after last read
-    let query = supabase
-      .from('messages')
-      .select('*', { count: 'exact', head: true })
-      .eq('channel_id', channelId)
-      .neq('sender_id', user.id)
-
-    if (lastRead?.read_at) {
-      query = query.gt('created_at', lastRead.read_at)
-    }
-
-    const { count, error } = await query
-
-    if (error) throw error
-    return count || 0
-  } catch (error) {
-    console.error('Unread count error:', error)
-    return 0
-  }
-}
-
-// Create or get DM channel between two users
+// ── DM & Group Chat Channels ──
 export async function getOrCreateDMChannel(otherUserId) {
   const user = auth.getCurrentUser()
   if (!user) throw new Error('Authentication required')
 
-  try {
-    // Check if channel exists
-    const { data: existing } = await supabase
-      .from('channels')
-      .select('*')
-      .eq('type', 'dm')
-      .contains('member_ids', [user.id])
-      .contains('member_ids', [otherUserId])
-      .single()
+  const allChannels = await db.selectShared('dm_channels', {}, { limit: 300 })
+  const existing = allChannels.find(
+    (c) =>
+      c.type === 'direct' &&
+      Array.isArray(c.members) &&
+      c.members.includes(user.id) &&
+      c.members.includes(otherUserId)
+  )
 
-    if (existing) return existing
-
-    // Create new channel
-    const { data, error } = await supabase
-      .from('channels')
-      .insert({
-        type: 'dm',
-        member_ids: [user.id, otherUserId],
-        created_by: user.id,
-        created_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-    return data
-  } catch (error) {
-    console.error('Get/create DM channel error:', error)
-    throw error
+  const otherProfile = await db.getShared('profiles', otherUserId)
+  const otherChannel = (await db.selectShared('channels', { ownerId: otherUserId }, { limit: 1 }))[0]
+  const otherUser = {
+    id: otherUserId,
+    displayName: otherProfile?.displayName || otherChannel?.name || 'MiLey Creator',
+    avatarUrl: otherProfile?.avatarUrl || otherChannel?.avatarUrl || '',
   }
+
+  if (existing) {
+    return { ...existing, otherUser }
+  }
+
+  const pairKey = [user.id, otherUserId].sort().join('__')
+  const channelId = `dm_${pairKey}`
+  const created = await db.upsertShared(
+    'dm_channels',
+    {
+      id: channelId,
+      type: 'direct',
+      members: [user.id, otherUserId],
+      memberProfiles: {
+        [user.id]: {
+          id: user.id,
+          displayName: user.displayName || 'MiLey Creator',
+          avatarUrl: user.avatarUrl || '',
+        },
+        [otherUserId]: otherUser,
+      },
+      lastMessage: null,
+      lastMessageAt: new Date().toISOString(),
+    },
+    channelId,
+    { visibleTo: 'public' }
+  )
+
+  return { ...created, otherUser }
 }
 
-// Get user's channels
+export async function createGroupChannel({ name, members = [] }) {
+  const user = auth.getCurrentUser()
+  if (!user) throw new Error('Authentication required')
+  const allMembers = [...new Set([user.id, ...members])]
+  const channelId = `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+  return db.insertShared(
+    'dm_channels',
+    {
+      id: channelId,
+      type: 'group',
+      name: name || 'MiLey Group',
+      members: allMembers,
+      createdBy: user.id,
+      lastMessage: null,
+      lastMessageAt: new Date().toISOString(),
+    },
+    channelId,
+    { visibleTo: 'public' }
+  )
+}
+
 export async function getUserChannels() {
   const user = auth.getCurrentUser()
   if (!user) return []
+  const all = await db.selectShared('dm_channels', {}, { order: '-lastMessageAt', limit: 200 })
+  const profiles = await db.selectShared('profiles', {}, { limit: 300 })
+  const profileMap = new Map(profiles.map((p) => [p.userId || p.id, p]))
 
-  try {
-    const { data, error } = await supabase
-      .from('channels')
-      .select('*, members:user_channels(user_id, joined_at)')
-      .contains('member_ids', [user.id])
-      .order('last_message_at', { ascending: false, nullsFirst: false })
-
-    if (error) throw error
-    return data || []
-  } catch (error) {
-    console.error('Get channels error:', error)
-    return []
-  }
+  const mine = all.filter((c) => Array.isArray(c.members) && c.members.includes(user.id))
+  return mine.map((c) => {
+    if (c.type === 'direct') {
+      const otherId = (c.members || []).find((m) => m !== user.id) || user.id
+      const cached = c.memberProfiles?.[otherId]
+      const prof = profileMap.get(otherId)
+      return {
+        ...c,
+        otherUser: {
+          id: otherId,
+          displayName: prof?.displayName || cached?.displayName || 'MiLey Creator',
+          avatarUrl: prof?.avatarUrl || cached?.avatarUrl || '',
+        },
+      }
+    }
+    return c
+  })
 }
 
-// Join a channel
+export async function sendMessage(channelId, payloadOrText, options = {}) {
+  const user = auth.getCurrentUser()
+  if (!user) throw new Error('Authentication required')
+
+  let type = options.type || 'text'
+  let content = ''
+  let metadata = {}
+
+  if (typeof payloadOrText === 'string') {
+    content = payloadOrText
+  } else if (payloadOrText && typeof payloadOrText === 'object') {
+    if (payloadOrText.image) {
+      type = 'image'
+      content = '[Image]'
+      metadata = { imageUrl: payloadOrText.image }
+    } else if (payloadOrText.audio) {
+      type = 'audio'
+      content = '[Voice message]'
+      metadata = { audioUrl: payloadOrText.audio, duration: payloadOrText.duration || 0 }
+    } else {
+      type = payloadOrText.type || 'text'
+      content = payloadOrText.text || payloadOrText.content || ''
+      metadata = payloadOrText.metadata || {}
+    }
+  }
+
+  const now = new Date().toISOString()
+  const msg = await db.insertShared(
+    'dm_messages',
+    {
+      channelId,
+      senderId: user.id,
+      senderName: user.displayName || 'MiLey Creator',
+      content,
+      text: content,
+      type,
+      metadata,
+      createdAt: now,
+    },
+    undefined,
+    { visibleTo: 'public' }
+  )
+
+  await db.updateShared('dm_channels', channelId, {
+    lastMessage: {
+      id: msg.id,
+      content,
+      senderId: user.id,
+      createdAt: now,
+    },
+    lastMessageAt: now,
+  }).catch(() => {})
+
+  return msg
+}
+
+export async function getMessages(channelId, options = {}) {
+  const { limit = 60 } = options
+  const rows = await db.selectShared('dm_messages', { channelId }, { order: 'createdAt', limit: limit * 2 })
+  return rows.slice(-limit)
+}
+
+export async function markMessageRead(messageId) {
+  const user = auth.getCurrentUser()
+  if (!user) return false
+  await db.upsertShared('message_reads', { messageId, userId: user.id, lastReadAt: new Date().toISOString() }, `${messageId}_${user.id}`)
+  return true
+}
+
+export async function getUnreadCount(channelId) {
+  const user = auth.getCurrentUser()
+  if (!user) return 0
+  const notifs = await db.selectShared('notifications', { recipientId: user.id, type: 'message' }, { limit: 100 })
+  return notifs.filter((n) => !n.read && n.meta?.channelId === channelId).length
+}
+
 export async function joinChannel(channelId) {
   const user = auth.getCurrentUser()
-  if (!user) throw new Error('Authentication required')
-
-  try {
-    const { data, error } = await supabase
-      .from('user_channels')
-      .insert({
-        channel_id: channelId,
-        user_id: user.id,
-        joined_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-    return data
-  } catch (error) {
-    console.error('Join channel error:', error)
-    throw error
-  }
+  if (!user) return null
+  const ch = await db.getShared('dm_channels', channelId)
+  if (!ch) return null
+  const members = [...new Set([...(ch.members || []), user.id])]
+  return db.updateShared('dm_channels', channelId, { members })
 }
 
-// Leave a channel
 export async function leaveChannel(channelId) {
   const user = auth.getCurrentUser()
-  if (!user) throw new Error('Authentication required')
-
-  try {
-    const { error } = await supabase
-      .from('user_channels')
-      .delete()
-      .eq('channel_id', channelId)
-      .eq('user_id', user.id)
-
-    if (error) throw error
-    return true
-  } catch (error) {
-    console.error('Leave channel error:', error)
-    throw error
-  }
+  if (!user) return true
+  const ch = await db.getShared('dm_channels', channelId)
+  if (!ch) return true
+  const members = (ch.members || []).filter((id) => id !== user.id)
+  await db.updateShared('dm_channels', channelId, { members })
+  return true
 }
 
-// Block a user
 export async function blockUser(blockedId) {
   const user = auth.getCurrentUser()
   if (!user) throw new Error('Authentication required')
-
-  try {
-    const { data, error } = await supabase
-      .from('blocks')
-      .insert({
-        blocker_id: user.id,
-        blocked_id: blockedId,
-        created_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-    return data
-  } catch (error) {
-    console.error('Block user error:', error)
-    throw error
-  }
+  const id = `${user.id}_${blockedId}`
+  return db.upsertShared('blocks', { blockerId: user.id, blockedId }, id)
 }
 
-// Unblock a user
 export async function unblockUser(blockedId) {
   const user = auth.getCurrentUser()
   if (!user) throw new Error('Authentication required')
-
-  try {
-    const { error } = await supabase
-      .from('blocks')
-      .delete()
-      .eq('blocker_id', user.id)
-      .eq('blocked_id', blockedId)
-
-    if (error) throw error
-    return true
-  } catch (error) {
-    console.error('Unblock user error:', error)
-    throw error
-  }
+  return db.deleteShared('blocks', `${user.id}_${blockedId}`)
 }
 
-// Get blocked users
 export async function getBlockedUsers() {
   const user = auth.getCurrentUser()
   if (!user) return []
-
-  try {
-    const { data, error } = await supabase
-      .from('blocks')
-      .select('blocked_id, blocked:blocked_id(id, display_name, avatar_url)')
-      .eq('blocker_id', user.id)
-
-    if (error) throw error
-    return data || []
-  } catch (error) {
-    console.error('Get blocked users error:', error)
-    return []
-  }
+  return db.selectShared('blocks', { blockerId: user.id })
 }
 
 export const social = {
@@ -434,6 +305,7 @@ export const social = {
   markMessageRead,
   getUnreadCount,
   getOrCreateDMChannel,
+  createGroupChannel,
   getUserChannels,
   joinChannel,
   leaveChannel,

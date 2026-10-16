@@ -47,15 +47,39 @@ export async function markChannelNotificationsRead(channelId) {
 // Fire a notification: writes the in-app row (recipient-only visibility) and
 // sends a real OS push in parallel. Always called from a genuine user action
 // (follow tap, upload publish, invite, comment, etc.) — never on a timer.
-export async function notify(recipientId, { type, title, body, url, meta = {} }) {
+export async function notify(recipientId, { type, title, body, url, link, meta = {} }) {
   if (!recipientId) return
   const me = auth.getCurrentUser()
   if (me && me.id === recipientId) return // don't notify yourself
+  const targetUrl = url || link || '/'
   try {
     await db.insertShared('notifications', {
-      recipientId, type, title, body, url: url || '/', read: false, meta,
+      recipientId, type, title, body, url: targetUrl, link: targetUrl, read: false, meta,
       fromId: me?.id, fromName: me?.displayName || 'MiLey user', fromAvatar: me?.avatarUrl || '',
     }, undefined, { visibleTo: `user:${recipientId}`, writableBy: `user:${recipientId}` })
   } catch (e) { /* ignore */ }
-  try { await push.send(recipientId, { title, body, url: url || '/' }) } catch (e) { /* push best-effort */ }
+  try { await push.send(recipientId, { title, body, url: targetUrl }) } catch (e) { /* push best-effort */ }
 }
+
+export async function notifyUser({ recipientId, type, title, body, link, url, meta = {} } = {}) {
+  return notify(recipientId, { type, title, body, url: url || link || '/', meta })
+}
+
+export async function notifyFollowers({ actorId, actorName, type, title, body, link, url, meta = {} } = {}) {
+  if (!actorId) return
+  try {
+    const follows = await db.selectShared('follows', { targetId: actorId }, { limit: 300 })
+    await Promise.all(
+      follows.map((f) =>
+        notify(f.followerId, {
+          type: type || 'new_track',
+          title: title || `${actorName || 'A creator'} posted an update`,
+          body: body || '',
+          url: url || link || '/',
+          meta,
+        })
+      )
+    )
+  } catch (e) { /* ignore */ }
+}
+

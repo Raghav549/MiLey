@@ -57,3 +57,14 @@ export function LandscapeGuard({ active }) {
     </div>
   )
 }
+
+export function PortraitLockOverlay() {
+  const isLandscape = usePortraitLock()
+  const isMobileLandscape =
+    isLandscape &&
+    typeof window !== 'undefined' &&
+    window.innerHeight < 480 &&
+    'ontouchstart' in window
+  return <LandscapeGuard active={isMobileLandscape} />
+}
+

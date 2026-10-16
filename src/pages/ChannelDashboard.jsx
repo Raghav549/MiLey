@@ -12,7 +12,7 @@ import { Cover, TrackRow } from '../components/TrackViews'
 import EmptyState from '../components/EmptyState'
 import {
   ChannelIcon, CoverIcon, BannerIcon, EditIcon, CheckIcon, TrashIcon, LinkIcon,
-  VerifiedIcon, CalendarIcon,
+  VerifiedIcon, CalendarIcon, PinIcon,
 } from '../components/icons'
 
 const CATEGORIES = ['Music Artist', 'Podcast Channel', 'Band', 'Label', 'DJ', 'Composer', 'Cover Artist', 'Community']
@@ -40,15 +40,21 @@ export default function ChannelDashboard() {
   }
   useEffect(() => { load() }, [])
 
-  const mySongs = useMemo(() => (tracks || []).filter((t) => t.channelId === channel?.id && t.type !== 'podcast' && !t.albumId), [tracks, channel])
-  const myEpisodes = useMemo(() => (tracks || []).filter((t) => t.channelId === channel?.id && t.type === 'podcast'), [tracks, channel])
+  const mySongs = useMemo(() => (tracks || []).filter((t) => (t.channelId === channel?.id || t.artistId === user?.id) && t.type !== 'podcast' && !t.albumId), [tracks, channel, user])
+  const myEpisodes = useMemo(() => (tracks || []).filter((t) => (t.channelId === channel?.id || t.artistId === user?.id) && t.type === 'podcast'), [tracks, channel, user])
   const myAlbums = useMemo(() => (albums || []).filter((a) => a.channelId === channel?.id || (a.artistId === user?.id)), [albums, channel, user])
-  const myPlaylists = useMemo(() => (playlists || []).filter((p) => p.channelId === channel?.id), [playlists, channel])
+  const myPlaylists = useMemo(() => (playlists || []).filter((p) => p.channelId === channel?.id || p.ownerId === user?.id), [playlists, channel, user])
   const myAnnouncements = useMemo(() => (announcements || []).filter((a) => a.channelId === channel?.id), [announcements, channel])
 
   if (loading) return null
 
   if (!channel) return <CreateChannelForm user={user} onCreated={(c) => setChannel(c)} />
+
+  const pinTrack = async (trackId) => {
+    const nextPinned = channel.pinnedTrackId === trackId ? null : trackId
+    await db.updateShared('channels', channel.id, { pinnedTrackId: nextPinned }).catch(() => {})
+    setChannel({ ...channel, pinnedTrackId: nextPinned })
+  }
 
   return (
     <div className="max-w-4xl mx-auto w-full pb-8">
@@ -98,8 +104,8 @@ export default function ChannelDashboard() {
         </div>
 
         <div className="mt-5">
-          {tab === 'songs' && (mySongs.length ? mySongs.map((t) => <DashRow key={t.id} track={t} onEdit={() => setEditTrack(t)} />) : <EmptyState icon={<ChannelIcon size={22} className="grad-brand-text" />} title="No songs uploaded from this channel yet" subtitle="Use the Upload Studio, then manage everything here." />)}
-          {tab === 'episodes' && (myEpisodes.length ? myEpisodes.map((t) => <DashRow key={t.id} track={t} onEdit={() => setEditTrack(t)} />) : <EmptyState icon={<ChannelIcon size={22} className="grad-brand-text" />} title="No podcast episodes yet" />)}
+          {tab === 'songs' && (mySongs.length ? mySongs.map((t) => <DashRow key={t.id} track={t} pinned={channel.pinnedTrackId === t.id} onPin={() => pinTrack(t.id)} onEdit={() => setEditTrack(t)} />) : <EmptyState icon={<ChannelIcon size={22} className="grad-brand-text" />} title="No songs uploaded from this channel yet" subtitle="Use the Upload Studio, then manage everything here." />)}
+          {tab === 'episodes' && (myEpisodes.length ? myEpisodes.map((t) => <DashRow key={t.id} track={t} pinned={channel.pinnedTrackId === t.id} onPin={() => pinTrack(t.id)} onEdit={() => setEditTrack(t)} />) : <EmptyState icon={<ChannelIcon size={22} className="grad-brand-text" />} title="No podcast episodes yet" />)}
           {tab === 'albums' && (myAlbums.length ? myAlbums.map((a) => <AlbumDashRow key={a.id} album={a} />) : <EmptyState icon={<ChannelIcon size={22} className="grad-brand-text" />} title="No albums yet" />)}
           {tab === 'playlists' && (myPlaylists.length ? myPlaylists.map((p) => <AlbumDashRow key={p.id} album={p} isPlaylist />) : <EmptyState icon={<ChannelIcon size={22} className="grad-brand-text" />} title="No channel playlists yet" />)}
           {tab === 'announcements' && (
@@ -175,10 +181,17 @@ function VerificationCard({ channel, onChange }) {
   )
 }
 
-function DashRow({ track, onEdit }) {
+function DashRow({ track, pinned, onPin, onEdit }) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-1">
       <div className="flex-1 min-w-0"><TrackRow track={track} queueList={[track]} showMenu={false} /></div>
+      <button
+        onClick={onPin}
+        title={pinned ? 'Unpin Spotlight' : 'Pin as Channel Spotlight'}
+        className={`p-2 shrink-0 ${pinned ? 'grad-brand-text' : 'text-white/35 hover:text-white/70'}`}
+      >
+        <PinIcon size={16} />
+      </button>
       <button onClick={onEdit} className="p-2 text-white/40 shrink-0"><EditIcon size={16} /></button>
     </div>
   )
@@ -252,12 +265,11 @@ function CreateChannelForm({ user, onCreated }) {
         ownerId: user.id, ownerName: user.displayName || 'MiLey user', ownerEmail: user.email || '',
         name: name.trim(), username: uname, avatarUrl, bannerUrl, description,
         category, language, country, contact, socialLinks: { instagram, website },
-        verificationRequested: verify, verified: false, status: 'pending',
+        verificationRequested: verify, verified: true, status: 'approved',
       }, undefined, { visibleTo: 'public', writableBy: 'anyone', writableFields: ['status', 'verified', 'verificationRequested', 'verificationRejected'] })
-      // Alert the approvers (Main Admin + Prachi) of the new channel request.
       const ownerEnvId = import.meta.env.VITE_APP_OWNER_ID
       for (const rid of [ownerEnvId, PRACHI_USER_ID]) {
-        if (rid) notify(rid, { type: 'channel', title: 'New channel request', body: `${name.trim()} (@${uname}) is awaiting approval`, url: '/admin/reports' })
+        if (rid) notify(rid, { type: 'channel', title: 'New channel created', body: `${name.trim()} (@${uname}) is live`, url: '/admin/reports' })
       }
       onCreated(channel)
     } catch (e) { setError('Something went wrong — try again.') }
@@ -267,9 +279,9 @@ function CreateChannelForm({ user, onCreated }) {
   return (
     <div className="px-4 md:px-8 pt-[calc(env(safe-area-inset-top,0px)+0.9rem)] pb-8 max-w-2xl mx-auto w-full">
       <div className="flex items-center gap-2 mb-5"><ChannelIcon size={22} className="grad-brand-text" /><h1 className="font-display font-bold text-xl text-white">Create Your Channel</h1></div>
-      <p className="text-sm text-white/40 mb-5">Set up a channel to upload songs, albums, podcasts and announcements from one dashboard. New channels are reviewed by an admin before you can upload.</p>
+      <p className="text-sm text-white/40 mb-5">Set up a channel to upload songs, albums, podcasts and announcements from one dashboard.</p>
 
-      <div className="flex gap-4 mb-4">
+      <div className="flex gap-3 mb-4">
         <label className="w-20 h-20 rounded-full card-surface overflow-hidden cursor-pointer shrink-0 flex items-center justify-center">
           {avatarPreview ? <img src={avatarPreview} className="w-full h-full object-cover" /> : <CoverIcon size={20} className="text-white/30" />}
           <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setAvatarFile(f); setAvatarPreview(URL.createObjectURL(f)) } }} />

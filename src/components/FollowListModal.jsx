@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { auth } from '../lib/auth'
+import { useFollows } from '../hooks/useFollows'
 import { CloseIcon, SearchIcon, ProfileIcon, ChannelIcon } from './icons'
 
-// Shared Followers / Following list sheet — searchable, tap any row to visit
-// that profile or channel directly.
 export default function FollowListModal({ title, loader, onClose }) {
   const navigate = useNavigate()
+  const me = auth.getCurrentUser()
+  const { isFollowing, toggleFollow } = useFollows()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
@@ -13,7 +15,12 @@ export default function FollowListModal({ title, loader, onClose }) {
   useEffect(() => {
     let alive = true
     setLoading(true)
-    Promise.resolve(loader()).then((r) => { if (alive) { setRows(r); setLoading(false) } })
+    Promise.resolve(loader()).then((r) => {
+      if (alive) {
+        setRows(Array.isArray(r) ? r : [])
+        setLoading(false)
+      }
+    })
     return () => { alive = false }
   }, [loader])
 
@@ -45,14 +52,31 @@ export default function FollowListModal({ title, loader, onClose }) {
           <p className="text-sm text-white/30 text-center py-6">Nobody here yet.</p>
         ) : (
           <div className="space-y-1">
-            {filtered.map((r) => (
-              <button key={r.id} onClick={() => go(r)} className="w-full flex items-center gap-3 px-2 py-2.5 rounded-xl hover:bg-white/5 text-left">
-                <div className="w-11 h-11 rounded-full overflow-hidden bg-gradient-to-br from-emerald-500/30 to-pink-500/30 flex items-center justify-center shrink-0 border border-white/10">
-                  {r.avatarUrl ? <img src={r.avatarUrl} className="w-full h-full object-cover" /> : (r.kind === 'channel' ? <ChannelIcon size={16} className="text-white/60" /> : <ProfileIcon size={16} className="text-white/60" />)}
+            {filtered.map((r) => {
+              const following = isFollowing(r.id)
+              const isMe = me?.id === r.id
+              return (
+                <div key={r.id} className="w-full flex items-center gap-3 px-2 py-2.5 rounded-xl hover:bg-white/5">
+                  <button onClick={() => go(r)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                    <div className="w-11 h-11 rounded-full overflow-hidden bg-gradient-to-br from-emerald-500/30 to-pink-500/30 flex items-center justify-center shrink-0 border border-white/10">
+                      {r.avatarUrl ? <img src={r.avatarUrl} className="w-full h-full object-cover" /> : (r.kind === 'channel' ? <ChannelIcon size={16} className="text-white/60" /> : <ProfileIcon size={16} className="text-white/60" />)}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <span className="text-sm text-white truncate block">{r.name}</span>
+                      {r.username && <span className="text-xs text-white/40 truncate block">@{r.username}</span>}
+                    </div>
+                  </button>
+                  {!isMe && (
+                    <button
+                      onClick={() => toggleFollow(r.id, r.kind || 'artist', r.name, r.avatarUrl, r.username)}
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold shrink-0 ${following ? 'card-surface text-white' : 'btn-brand text-black'}`}
+                    >
+                      {following ? 'Following' : 'Follow'}
+                    </button>
+                  )}
                 </div>
-                <span className="text-sm text-white truncate">{r.name}</span>
-              </button>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>

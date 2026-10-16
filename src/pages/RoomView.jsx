@@ -13,12 +13,17 @@ import {
   BackIcon, PlayIcon, PauseIcon, NextIcon, PrevIcon, UsersIcon, SkipVoteIcon, InviteIcon,
   SendIcon, CloseIcon, PlusIcon, CheckIcon, CrownIcon, ShieldIcon, VolumeIcon,
   MicOffIcon, MicIcon, SignalIcon, SmileIcon, SeatIcon, LockIcon, TrashIcon,
-  SearchIcon,
+  SearchIcon, HandIcon, SparkleIcon,
 } from '../components/icons'
-import { timeAgo, formatDuration, roomBackgroundStyle } from '../musicHelpers'
+import { timeAgo, formatDuration, roomBackgroundStyle, getSongTheme } from '../musicHelpers'
 
-// Premium reaction set — float up from the sender's seat avatar.
 const REACTIONS = ['❤️', '🔥', '👏', '😂', '😍', '😮', '🎉', '🤝', '👑', '🎵', '💯', '⭐']
+const SOUNDBOARD_FX = [
+  { id: 'airhorn', label: '📣 Airhorn', emoji: '📣' },
+  { id: 'drop', label: '💥 Bass Drop', emoji: '💥' },
+  { id: 'cheer', label: '🙌 Crowd', emoji: '🙌' },
+  { id: 'laser', label: '⚡ Laser', emoji: '⚡' },
+]
 const SEAT_COUNT = 9
 
 export default function RoomView() {
@@ -36,6 +41,8 @@ export default function RoomView() {
   const [localMsgs, setLocalMsgs] = useState([])
   const [musicOpen, setMusicOpen] = useState(false)
   const [reactOpen, setReactOpen] = useState(false)
+  const [fxOpen, setFxOpen] = useState(false)
+  const [vibeScore, setVibeScore] = useState(92)
   const [seatMenu, setSeatMenu] = useState(null)
   const [floating, setFloating] = useState([])
   const [toasts, setToasts] = useState([])
@@ -56,13 +63,12 @@ export default function RoomView() {
     audioRef.current.crossOrigin = 'anonymous'
   }
 
-  const pushToast = (text) => {
+  const pushToast = (msg) => {
     const id = ++toastId.current
-    setToasts((t) => [...t, { id, text }])
+    setToasts((t) => [...t, { id, text: msg }])
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3500)
   }
 
-  // Prefer the user's chosen profile name + photo over the raw account (email-derived) name.
   useEffect(() => {
     if (!user) return
     db.getShared('profiles', user.id).then((p) => { if (p) setIdentity({ name: p.displayName || user.displayName || 'MiLey user', avatarUrl: p.avatarUrl || user.avatarUrl || '' }) }).catch(() => {})
@@ -76,13 +82,11 @@ export default function RoomView() {
   const isSeated = mySeatIndex >= 0
   const mySeatMuted = mySeatIndex >= 0 ? !!seats[mySeatIndex]?.muted : false
 
-  // ── Real peer-to-peer voice (native WebRTC mesh) ──
   const { speakingIds, error: voiceError } = useVoiceChat({
     roomId, selfId: user?.id, enabled: isSeated, micOn: micOn && !mySeatMuted, volume: localVolume,
   })
   useEffect(() => { if (voiceError) pushToast(voiceError) }, [voiceError])
 
-  // ── Presence: who's actually in the room right now + join/leave banners ──
   useEffect(() => {
     let disposed = false
     const join = () => {
@@ -112,7 +116,6 @@ export default function RoomView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, identity.name])
 
-  // ── Connection quality (real navigator.connection when available) ──
   useEffect(() => {
     const conn = navigator.connection || navigator.webkitConnection
     const update = () => {
@@ -124,12 +127,13 @@ export default function RoomView() {
     return () => conn?.removeEventListener?.('change', update)
   }, [])
 
-  // ── Local audio element follows the room's shared playback state (one song, synced) ──
   useEffect(() => {
     const el = audioRef.current
     if (!el) return
     if (!room?.currentTrack) { el.pause(); el.removeAttribute('src'); return }
-    if (el.src !== room.currentTrack.audioUrl) el.src = room.currentTrack.audioUrl
+    const url = room.currentTrack.audioUrl || ''
+    if (!url || url.startsWith('synth://') || url.startsWith('idb://')) return
+    if (el.src !== url) el.src = url
     const expected = room.isPlaying && room.startedAt
       ? room.position + (Date.now() - new Date(room.startedAt).getTime()) / 1000
       : room.position
@@ -153,7 +157,6 @@ export default function RoomView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHost, room?.tempDJUserId, room?.queue])
 
-  // ── Floating reactions ──
   useEffect(() => {
     for (const r of reactionRows || []) {
       if (seenReactionIds.current.has(r.id)) continue
@@ -177,15 +180,6 @@ export default function RoomView() {
 
   const setRoom = (patch) => db.updateShared('voice_rooms', roomId, patch)
 
-  // ── Race-safe room mutation ──
-  // Every seat/queue/admin action here used to compute its patch off the
-  // possibly-stale snapshot from the live-list hook and overwrite the whole
-  // array — so two near-simultaneous actions (two people tapping different
-  // empty seats, a host skipping while a listener requests) could silently
-  // clobber each other (the "seat sometimes doesn't show" bug). Instead:
-  // fetch the freshest row right before mutating, compute the patch against
-  // THAT, write it, then (for seat claims) verify our own change actually
-  // landed and retry against newer data if a concurrent write raced us.
   const mutateRoom = async (compute, verify) => {
     let fresh = (await db.getShared('voice_rooms', roomId).catch(() => null)) || room
     const attempts = verify ? 3 : 1
@@ -201,7 +195,6 @@ export default function RoomView() {
     return false
   }
 
-  // ── Seat management ──
   const tapSeat = (index) => {
     const seat = seats[index]
     if (seat) {
@@ -302,7 +295,6 @@ export default function RoomView() {
     await mutateRoom((fresh) => ({ admins: (fresh.admins || []).filter((a) => a !== userId) }))
   }
 
-  // ── Playback (owner/admin controlled) — one song at a time, history-aware ──
   const advanceQueue = async () => {
     await mutateRoom((fresh) => {
       const q = [...(fresh.queue || [])]
@@ -370,7 +362,6 @@ export default function RoomView() {
     })
   }
 
-  // ── Chat ──
   const sendChat = async () => {
     const val = text.trim()
     if (!val) return
@@ -386,11 +377,19 @@ export default function RoomView() {
 
   const sendReaction = async (emoji) => {
     setReactOpen(false)
-    await db.insertShared('room_reactions', { roomId, seatIndex: isSeated ? mySeatIndex : null, userId: user.id, emoji }, undefined, { visibleTo: 'public', writableBy: 'anyone' })
+    setVibeScore((v) => Math.min(100, v + 2))
+    await db.insertShared('room_reactions', { roomId, seatIndex: isSeated ? mySeatIndex : 0, userId: user.id, emoji }, undefined, { visibleTo: 'public', writableBy: 'anyone' })
+  }
+
+  const triggerSoundFX = async (fx) => {
+    setFxOpen(false)
+    setVibeScore((v) => Math.min(100, v + 3))
+    pushToast(`${identity.name} triggered ${fx.label}!`)
+    await db.insertShared('room_reactions', { roomId, seatIndex: isSeated ? mySeatIndex : 0, userId: user.id, emoji: fx.emoji }, undefined, { visibleTo: 'public', writableBy: 'anyone' })
   }
 
   const inviteRoom = () => {
-    const url = `${import.meta.env.VITE_APP_URL || window.location.origin}/#/rooms/${roomId}`
+    const url = `https://mileymusic.space/rooms/${roomId}`
     share.link({ title: room.name, text: `Join my voice room "${room.name}" on MiLey!`, url })
   }
 
@@ -402,7 +401,9 @@ export default function RoomView() {
 
   const bgStyle = room.backgroundUrl
     ? { backgroundImage: `linear-gradient(rgba(11,11,11,0.55), rgba(11,11,11,0.85)), url(${room.backgroundUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-    : roomBackgroundStyle(room.backgroundKey)
+    : roomBackgroundStyle(room)
+
+  const currentSongTheme = room.currentTrack ? getSongTheme(room.currentTrack) : null
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col text-white" style={{ ...bgStyle, height: 'var(--visual-height, 100dvh)' }}>
@@ -412,14 +413,15 @@ export default function RoomView() {
         <div className="w-9 h-9 shrink-0"><Cover track={{ title: room.name, coverUrl: room.coverUrl }} size="fill" rounded="rounded-xl" /></div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold truncate">{room.name}</p>
-          <p className="text-[11px] text-white/50 flex items-center gap-1"><UsersIcon size={11} /> {onlineCount} in room · {room.purpose === 'Custom' ? room.customPurpose : room.purpose}</p>
+          <p className="text-[11px] text-white/50 flex items-center gap-1">
+            <UsersIcon size={11} /> {onlineCount} in room · {room.purpose === 'Custom' ? room.customPurpose : room.purpose} · 🔥 {vibeScore}% Vibe
+          </p>
         </div>
         <SignalIcon size={16} bars={bars} className="text-white/60 shrink-0" />
         <button onClick={inviteRoom} className="p-1.5 text-white/70 shrink-0"><InviteIcon size={18} /></button>
         {canControl && <button onClick={endRoom} className="text-[11px] text-red-400 font-medium px-1.5 shrink-0">End</button>}
-        {/* Floating spinning disc — opens the Music Panel */}
         <button onClick={() => setMusicOpen(true)} className="relative w-11 h-11 rounded-full shrink-0 border border-white/20 overflow-hidden shadow-lg" style={{ animation: room.isPlaying ? 'spinDisc 4s linear infinite' : 'none' }}>
-          <Cover track={{ title: room.name, coverUrl: room.coverUrl }} size="fill" rounded="rounded-full" />
+          <Cover track={room.currentTrack || { title: room.name, coverUrl: room.coverUrl }} size="fill" rounded="rounded-full" />
           <span className="absolute inset-0 flex items-center justify-center"><span className="w-3 h-3 rounded-full bg-black/70 border border-white/30" /></span>
           {(room.queue || []).length > 0 && <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full grad-brand text-[9px] font-bold text-black flex items-center justify-center">{room.queue.length}</span>}
         </button>
@@ -484,8 +486,14 @@ export default function RoomView() {
       <button onClick={() => setMusicOpen(true)} className="shrink-0 mx-4 mb-2 rounded-xl bg-black/40 backdrop-blur border border-white/10 px-3 py-2 flex items-center gap-2 text-left">
         {room.currentTrack ? (
           <>
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-            <p className="text-xs text-white/80 truncate flex-1"><span className="font-semibold">{room.currentTrack.title}</span> · {room.currentTrack.artistName}</p>
+            <span
+              className="w-2 h-2 rounded-full animate-pulse shrink-0"
+              style={{ background: currentSongTheme?.primaryColor || '#34d399' }}
+            />
+            <p className="text-xs text-white/80 truncate flex-1">
+              <span className="font-semibold">{room.currentTrack.title}</span> · {room.currentTrack.artistName}
+              {currentSongTheme ? ` · ${currentSongTheme.name}` : ''}
+            </p>
             {room.isPlaying ? <PauseIcon size={13} className="text-white/50 shrink-0" /> : <PlayIcon size={13} className="text-white/50 shrink-0" />}
           </>
         ) : (
@@ -493,7 +501,7 @@ export default function RoomView() {
         )}
       </button>
 
-      {/* Chat: messages stack above the permanent input, newest nearest the input */}
+      {/* Chat: messages stack above the permanent input */}
       <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar px-4 flex flex-col justify-end">
         <div className="space-y-1.5 pb-1">
           {mergedMsgs.map((m) => (
@@ -507,6 +515,21 @@ export default function RoomView() {
         </div>
       </div>
 
+      {/* Soundboard FX picker */}
+      {fxOpen && (
+        <div className="shrink-0 mx-4 mb-2 rounded-2xl bg-black/60 backdrop-blur-xl border border-white/10 p-3 grid grid-cols-2 sm:grid-cols-4 gap-2 animate-sheet-up">
+          {SOUNDBOARD_FX.map((fx) => (
+            <button
+              key={fx.id}
+              onClick={() => triggerSoundFX(fx)}
+              className="card-surface rounded-xl py-2 px-3 text-xs font-medium text-white hover:bg-white/10"
+            >
+              {fx.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Reaction picker (opens above the input) */}
       {reactOpen && (
         <div className="shrink-0 mx-4 mb-2 rounded-2xl bg-black/60 backdrop-blur-xl border border-white/10 p-3 grid grid-cols-6 gap-2 animate-sheet-up">
@@ -514,7 +537,7 @@ export default function RoomView() {
         </div>
       )}
 
-      {/* Permanent chat input + reaction button */}
+      {/* Permanent chat input + reaction & soundboard buttons */}
       <div className="shrink-0 flex items-center gap-2 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.9rem)] pt-1">
         {isSeated ? (
           <>
@@ -526,12 +549,13 @@ export default function RoomView() {
         ) : (
           <button onClick={() => { const empty = seats.findIndex((s, i) => !s && !room.seatLocks?.[i]); empty >= 0 ? joinSeat(empty) : requestSeat() }} className="shrink-0 text-[10px] font-semibold px-2.5 py-2 rounded-full grad-brand text-black"><SeatIcon size={13} /></button>
         )}
-        <button onClick={() => setReactOpen((v) => !v)} className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${reactOpen ? 'grad-brand text-black' : 'bg-white/10 text-white/70'}`}><SmileIcon size={19} /></button>
+        <button onClick={() => { setReactOpen((v) => !v); setFxOpen(false) }} className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${reactOpen ? 'grad-brand text-black' : 'bg-white/10 text-white/70'}`}><SmileIcon size={19} /></button>
+        <button onClick={() => { setFxOpen((v) => !v); setReactOpen(false) }} title="DJ Soundboard FX" className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${fxOpen ? 'grad-brand text-black' : 'bg-white/10 text-white/70'}`}><SparkleIcon size={17} /></button>
         <input value={text} onChange={(e) => { setText(e.target.value); setTyping(!!e.target.value) }} onBlur={() => setTyping(false)} onKeyDown={(e) => e.key === 'Enter' && sendChat()} placeholder="Say something…" className="flex-1 min-w-0 bg-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder-white/30 outline-none" />
         <button onClick={sendChat} className="shrink-0 w-10 h-10 rounded-full btn-brand flex items-center justify-center"><SendIcon size={16} color="#0B0B0B" /></button>
       </div>
 
-      {/* Join/leave toasts — slide in from the right */}
+      {/* Join/leave toasts */}
       <div className="fixed top-[calc(env(safe-area-inset-top,0px)+4.5rem)] right-3 z-50 flex flex-col gap-2 items-end pointer-events-none">
         {toasts.map((t) => (
           <div key={t.id} className="bg-black/70 backdrop-blur-xl border border-white/10 rounded-full px-4 py-2 text-xs text-white shadow-lg" style={{ animation: 'slideInRight 0.35s ease-out' }}>{t.text}</div>
@@ -568,21 +592,24 @@ export default function RoomView() {
           <div className="w-full md:max-w-md bg-[#141414] rounded-t-3xl md:rounded-3xl p-6 pb-[calc(env(safe-area-inset-bottom,0px)+1.5rem)] animate-sheet-up">
             <div className="w-12 h-12 rounded-2xl grad-brand flex items-center justify-center mb-4"><ShieldIcon size={22} color="#0B0B0B" /></div>
             <h3 className="font-display font-bold text-white text-lg mb-3">Voice Room Guidelines</h3>
-            <ul className="space-y-2.5 mb-5 text-sm text-white/60">
-              <li className="flex gap-2"><CheckIcon size={16} className="grad-brand-text shrink-0 mt-0.5" /> Be respectful — no harassment, hate speech or spam.</li>
-              <li className="flex gap-2"><CheckIcon size={16} className="grad-brand-text shrink-0 mt-0.5" /> Only the host & admins control music. Request tracks via the queue.</li>
-              <li className="flex gap-2"><CheckIcon size={16} className="grad-brand-text shrink-0 mt-0.5" /> Tap any empty seat to join, then tap the mic to talk — allow microphone access when asked.</li>
-              <li className="flex gap-2"><CheckIcon size={16} className="grad-brand-text shrink-0 mt-0.5" /> Hosts may mute, remove or ban anyone who breaks the rules.</li>
+            <ul className="text-xs text-white/60 space-y-2 mb-5">
+              <li>• Respect the host, speakers on the seats, and listeners in chat.</li>
+              <li>• Do not play copyrighted or abusive audio over your microphone.</li>
+              <li>• Hosts and room admins can mute, remove, or lock seats at any time.</li>
             </ul>
-            <button onClick={() => { try { localStorage.setItem('miley_room_rules_ack', '1') } catch {} setShowRules(false) }} className="w-full btn-brand text-black font-semibold py-3 rounded-2xl text-sm">I Understand — Enter Room</button>
-            <button onClick={() => navigate('/rooms')} className="w-full mt-2 py-2.5 text-sm text-white/40">Leave</button>
+            <button
+              onClick={() => { try { localStorage.setItem('miley_room_rules_ack', '1') } catch {} setShowRules(false) }}
+              className="w-full btn-brand text-black font-semibold py-3 rounded-2xl text-sm"
+            >
+              Got It, Enter Room
+            </button>
           </div>
         </div>
       )}
 
       <style>{`
-        @keyframes floatUpFade { 0% { opacity:0; transform: translateY(0) scale(0.6); } 20% { opacity:1; transform: translateY(-10px) scale(1.1); } 100% { opacity:0; transform: translateY(-52px) scale(1); } }
-        @keyframes slideInRight { 0% { opacity:0; transform: translateX(60px); } 100% { opacity:1; transform: translateX(0); } }
+        @keyframes floatUpFade { 0% { opacity: 1; transform: translateY(0) scale(0.9); } 100% { opacity: 0; transform: translateY(-48px) scale(1.25); } }
+        @keyframes slideInRight { 0% { opacity: 0; transform: translateX(40px); } 100% { opacity: 1; transform: translateX(0); } }
         @keyframes spinDisc { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         @keyframes speakPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(52,211,153,0.5); } 50% { box-shadow: 0 0 0 6px rgba(52,211,153,0); } }
       `}</style>

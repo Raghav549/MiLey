@@ -1,191 +1,256 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { auth } from '../lib/auth'
 import { db } from '../lib/db'
 import { storage } from '../lib/storage'
 import { push } from '../lib/push'
+import { usePlayer } from '../context/PlayerContext'
 import { useLiveShared } from '../lib/useLive'
-import { followerCount, getFollowersList, getFollowingList } from '../hooks/useFollows'
-import { Cover } from '../components/TrackViews'
-import { useNavigate } from 'react-router-dom'
-import {
-  ProfileIcon, EditIcon, CloseIcon, ChartIcon, UsersIcon, UploadIcon, HeartIcon, CheckIcon,
-  MessageIcon, BellIcon, RoomIcon, CalendarIcon, ChannelIcon, QRIcon, StreakIcon, ThemeIcon,
-  LinkIcon, FlagIcon, PlusIcon, ShieldIcon,
-} from '../components/icons'
-import { timeAgo } from '../musicHelpers'
-import { useNotifications, useUnreadMessageCount } from '../hooks/useNotifications'
-import { useMyPermissions } from '../permissions'
+import { getLikedTracks } from '../hooks/useLikes'
+import { useFollows, followerCount, getFollowersList, getFollowingList } from '../hooks/useFollows'
+import { useNotifications } from '../hooks/useNotifications'
+import { PROFILE_THEMES, profileThemeGrad, timeAgo } from '../musicHelpers'
+import { isAdmin } from '../permissions'
 import QRCard from '../components/QRCard'
 import FollowListModal from '../components/FollowListModal'
+import {
+  ProfileIcon, EditIcon, CheckIcon, CloseIcon, HeartIcon, UploadIcon,
+  ClockIcon, BellIcon, ShieldIcon, ChannelIcon, MessageIcon, QrIcon,
+  LinkIcon, ThemeIcon,
+} from '../components/icons'
 
-const PROFILE_THEMES = [
-  { key: 'signature', label: 'Signature', grad: 'from-emerald-500/20 to-pink-500/20' },
-  { key: 'sunset', label: 'Sunset', grad: 'from-orange-500/25 to-pink-600/25' },
-  { key: 'ocean', label: 'Ocean', grad: 'from-emerald-500/25 to-sky-500/20' },
-  { key: 'violet', label: 'Violet', grad: 'from-fuchsia-500/25 to-indigo-500/20' },
+const THEMES = [
+  { key: 'emerald', label: 'Emerald & Pink', primary: '0 224 168', secondary: '255 61 174' },
+  { key: 'violet', label: 'Electric Violet', primary: '168 85 247', secondary: '56 189 248' },
+  { key: 'sunset', label: 'Solar Coral', primary: '251 146 60', secondary: '244 63 94' },
 ]
+
+function applyAccent(key) {
+  const t = THEMES.find((x) => x.key === key) || THEMES[0]
+  document.documentElement.style.setProperty('--color-primary', t.primary)
+  document.documentElement.style.setProperty('--color-secondary', t.secondary)
+  try { localStorage.setItem('miley_accent', t.key) } catch (e) { /* ignore */ }
+}
+
+function NotifCount() {
+  const { unread } = useNotifications()
+  if (!unread) return null
+  return <span className="ml-auto text-xs font-bold px-2 py-0.5 rounded-full btn-brand text-black">{unread}</span>
+}
 
 export default function Profile() {
   const navigate = useNavigate()
   const user = auth.getCurrentUser()
-  const [profile, setProfile] = useState(null)
-  const [editing, setEditing] = useState(false)
-  const [followers, setFollowers] = useState(0)
-  const [followingCount, setFollowingCount] = useState(0)
-  const [history, setHistory] = useState([])
-  const [showQR, setShowQR] = useState(false)
-  const [followModal, setFollowModal] = useState(null)
-  const [pushState, setPushState] = useState(() => push.getPermission ? push.getPermission() : 'default')
-  const { unreadCount } = useNotifications()
-  const unreadMsgCount = useUnreadMessageCount()
-  const { isAdminish } = useMyPermissions()
+  const { history } = usePlayer()
   const { data: allTracks } = useLiveShared('tracks', { order: '-createdAt', limit: 300 })
-  const { data: allPlaylists } = useLiveShared('playlists', { order: '-createdAt', limit: 200 })
+  const { followingIds } = useFollows()
+  const [profile, setProfile] = useState(null)
+  const [likedCount, setLikedCount] = useState(0)
+  const [followers, setFollowers] = useState(0)
+  const [editing, setEditing] = useState(false)
+  const [showQR, setShowQR] = useState(false)
+  const [followModal, setFollowModal] = useState(null) // 'followers' | 'following' | null
+  const [pushPerm, setPushPerm] = useState('default')
+  const [accent, setAccent] = useState(() => {
+    try { return localStorage.getItem('miley_accent') || 'emerald' } catch { return 'emerald' }
+  })
 
-  const myTracks = useMemo(() => (allTracks || []).filter((t) => t.artistId === user?.id), [allTracks, user])
-  const myPlaylists = useMemo(() => (allPlaylists || []).filter((p) => p.ownerId === user?.id), [allPlaylists, user])
-  const totalPlays = useMemo(() => myTracks.reduce((s, t) => s + (t.plays || 0), 0), [myTracks])
-  const totalLikes = useMemo(() => myTracks.reduce((s, t) => s + (t.likesCount || 0), 0), [myTracks])
-
-  const favoriteGenres = useMemo(() => {
-    const counts = {}
-    for (const h of history) if (h.genre) counts[h.genre] = (counts[h.genre] || 0) + 1
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([g]) => g)
-  }, [history])
+  useEffect(() => {
+    applyAccent(accent)
+  }, [accent])
 
   useEffect(() => {
     if (!user) return
-    db.getShared('profiles', user.id).then(setProfile).catch(() => setProfile(null))
+    db.getShared('profiles', user.id).then((p) => {
+      if (p) setProfile(p)
+      else {
+        const seed = { displayName: user.displayName || 'MiLey Listener', bio: '', avatarUrl: user.avatarUrl || '', userId: user.id }
+        db.upsertShared('profiles', seed, user.id, { visibleTo: 'public' }).then(setProfile).catch(() => setProfile(seed))
+      }
+    }).catch(() => {})
+    getLikedTracks().then((t) => setLikedCount(t.length))
     followerCount(user.id).then(setFollowers)
-    db.selectShared('follows', { followerId: user.id }, { limit: 500 }).then((r) => setFollowingCount(r.length))
-    db.select('history', {}, { limit: 200, order: '-createdAt' }).then(setHistory)
-  }, [user])
+    try { setPushPerm(push.getPermission()) } catch (e) { /* ignore */ }
+  }, [user, followingIds.size])
 
-  const badges = []
-  if (totalPlays >= 100) badges.push('Rising Star')
-  if (totalPlays >= 1000) badges.push('Crowd Favorite')
-  if (myTracks.length >= 5) badges.push('Prolific Uploader')
-  if (followers >= 10) badges.push('Community Voice')
+  const myUploads = useMemo(() => (allTracks || []).filter((t) => t.artistId === user?.id), [allTracks, user])
+  const minutesListened = Math.max(1, Math.round(history.length * 3.4))
 
-  const streak = useMemo(() => {
-    if (!history.length) return 0
-    const days = new Set(history.map((h) => (h.playedAt || '').slice(0, 10)))
-    let count = 0
-    const d = new Date()
-    for (;;) {
-      const key = d.toISOString().slice(0, 10)
-      if (days.has(key)) { count++; d.setDate(d.getDate() - 1) } else break
-    }
-    return count
-  }, [history])
-  if (streak >= 3) badges.push(`${streak}-Day Streak`)
+  const enablePush = async () => {
+    try {
+      const p = await push.requestPermission()
+      setPushPerm(p)
+      if (p === 'granted') await push.subscribe()
+    } catch (e) { /* ignore */ }
+  }
 
-  const theme = PROFILE_THEMES.find((t) => t.key === profile?.theme) || PROFILE_THEMES[0]
-  const profileUrl = `${import.meta.env.VITE_APP_URL || window.location.origin}/#/artist/${user?.id}`
+  const grad = profileThemeGrad(profile?.theme)
+  const profileUrl = `https://mileymusic.space/artist/${user?.id || ''}`
 
   return (
-    <div className="max-w-4xl mx-auto w-full pb-8">
-      <div className="relative h-40 md:h-56 w-full">
+    <div className="max-w-3xl mx-auto w-full pb-8">
+      {/* Banner */}
+      <div className="relative h-36 md:h-48 w-full overflow-hidden">
         {profile?.bannerUrl ? (
-          <img src={profile.bannerUrl} className="w-full h-full object-cover" />
+          <img src={profile.bannerUrl} alt="" className="w-full h-full object-cover" />
         ) : (
-          <div className={`w-full h-full bg-gradient-to-br ${theme.grad}`} />
+          <div className={`w-full h-full bg-gradient-to-br ${grad}`} />
         )}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#0B0B0B] to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-[#0B0B0B] via-[#0B0B0B]/30 to-transparent" />
       </div>
 
-      <div className="px-5 -mt-12 relative">
-        <div className="flex items-end justify-between">
-          <div className="w-24 h-24 rounded-full border-4 border-[#0B0B0B] overflow-hidden bg-gradient-to-br from-emerald-500/40 to-pink-500/40 flex items-center justify-center">
-            {profile?.avatarUrl ? <img src={profile.avatarUrl} className="w-full h-full object-cover" /> : <ProfileIcon size={30} className="text-white/60" />}
+      <div className="px-4 md:px-8 -mt-12 relative">
+        <div className="flex items-end justify-between gap-3">
+          <div className={`w-24 h-24 rounded-full overflow-hidden bg-gradient-to-br ${grad} flex items-center justify-center shrink-0 border-4 border-[#0B0B0B]`}>
+            {profile?.avatarUrl ? (
+              <img src={profile.avatarUrl} alt="" className="w-full h-full object-cover" />
+            ) : (
+              <ProfileIcon size={32} className="text-white/60" />
+            )}
           </div>
-          <div className="flex gap-2 mb-1">
-            <button onClick={() => navigate('/notifications')} className="relative card-surface w-10 h-10 rounded-full flex items-center justify-center text-white/60">
-              <BellIcon size={16} />
-              {unreadCount > 0 && <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full grad-brand text-[9px] font-bold text-black flex items-center justify-center">{unreadCount}</span>}
+          <div className="flex items-center gap-2 mb-1">
+            <button onClick={() => setShowQR(true)} aria-label="Share QR" className="w-10 h-10 rounded-full card-surface flex items-center justify-center text-white/70">
+              <QrIcon size={17} />
             </button>
-            <button onClick={() => navigate('/messages')} className="relative card-surface w-10 h-10 rounded-full flex items-center justify-center text-white/60">
-              <MessageIcon size={16} />
-              {unreadMsgCount > 0 && <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full grad-brand text-[9px] font-bold text-black flex items-center justify-center">{unreadMsgCount}</span>}
-            </button>
-            <button onClick={() => setShowQR(true)} className="card-surface w-10 h-10 rounded-full flex items-center justify-center text-white/60"><QRIcon size={16} /></button>
-            <button onClick={() => setEditing(true)} className="card-surface w-10 h-10 rounded-full flex items-center justify-center text-white/60">
+            <button onClick={() => setEditing(true)} aria-label="Edit profile" className="w-10 h-10 rounded-full card-surface flex items-center justify-center text-white/70">
               <EditIcon size={16} />
             </button>
           </div>
         </div>
 
-        <h1 className="font-display font-bold text-xl text-white mt-3">{profile?.displayName || user?.displayName || 'MiLey user'}</h1>
-        {profile?.customUsername && <p className="text-sm text-white/40">@{profile.customUsername}</p>}
-        {profile?.bio && <p className="text-sm text-white/50 mt-1 max-w-lg">{profile.bio}</p>}
-
-        {profile?.links?.length > 0 && (
-          <div className="flex gap-2 flex-wrap mt-2">
-            {profile.links.map((l, i) => l && <a key={i} href={l} target="_blank" rel="noreferrer" className="text-xs grad-brand-text font-medium flex items-center gap-1"><LinkIcon size={11} /> {l.replace(/^https?:\/\//, '').slice(0, 24)}</a>)}
-          </div>
+        <h1 className="font-display font-bold text-xl text-white mt-3 truncate">
+          {profile?.displayName || user?.displayName || 'MiLey Listener'}
+        </h1>
+        {profile?.customUsername && (
+          <p className="text-xs grad-brand-text font-medium">@{profile.customUsername}</p>
         )}
+        <p className="text-xs text-white/40 truncate">{user?.email || ''}</p>
+        {profile?.bio && <p className="text-sm text-white/65 mt-2">{profile.bio}</p>}
 
-        <div className="flex flex-wrap gap-2 mt-4">
-          <button onClick={() => navigate('/rooms')} className="text-xs font-medium card-surface px-3 py-2 rounded-xl text-white/70 flex items-center gap-1.5"><RoomIcon size={14} /> Voice Rooms</button>
-          <button onClick={() => navigate('/premieres')} className="text-xs font-medium card-surface px-3 py-2 rounded-xl text-white/70 flex items-center gap-1.5"><CalendarIcon size={14} /> Premieres</button>
-          <button onClick={() => navigate('/channel-dashboard')} className="text-xs font-medium card-surface px-3 py-2 rounded-xl text-white/70 flex items-center gap-1.5"><ChannelIcon size={14} /> My Channel</button>
-          {isAdminish && <button onClick={() => navigate('/admin/reports')} className="text-xs font-medium card-surface px-3 py-2 rounded-xl text-white/70 flex items-center gap-1.5"><ShieldIcon size={14} /> Moderation</button>}
-        </div>
-
-        <div className="flex gap-5 mt-4 text-sm">
-          <button onClick={() => setFollowModal('followers')} className="text-white"><b>{followers}</b> <span className="text-white/40">Followers</span></button>
-          <button onClick={() => setFollowModal('following')} className="text-white"><b>{followingCount}</b> <span className="text-white/40">Following</span></button>
-          <span className="text-white"><b>{myTracks.length}</b> <span className="text-white/40">Uploads</span></span>
-        </div>
-
-        {pushState !== 'granted' && (
-          <button
-            onClick={async () => { const p = await push.requestPermission(); setPushState(p); if (p === 'granted') await push.subscribe() }}
-            className="mt-4 w-full flex items-center justify-center gap-2 card-surface rounded-2xl py-3 text-sm font-medium grad-brand-text"
-          >
-            <BellIcon size={15} /> Enable Notifications
-          </button>
-        )}
-
-        {badges.length > 0 && (
-          <div className="flex gap-2 mt-4 flex-wrap">
-            {badges.map((b) => (
-              <span key={b} className="text-xs font-medium px-3 py-1.5 rounded-full card-surface grad-brand-text flex items-center gap-1">
-                <CheckIcon size={12} /> {b}
-              </span>
+        {/* External links */}
+        {Array.isArray(profile?.links) && profile.links.filter(Boolean).length > 0 && (
+          <div className="flex flex-wrap gap-2 mt-2">
+            {profile.links.filter(Boolean).map((l, i) => (
+              <a key={i} href={l} target="_blank" rel="noreferrer" className="text-xs grad-brand-text flex items-center gap-1 card-surface px-2.5 py-1 rounded-full">
+                <LinkIcon size={11} />
+                <span className="truncate max-w-[160px]">{l.replace(/^https?:\/\//, '')}</span>
+              </a>
             ))}
           </div>
         )}
 
-        <div className="grid grid-cols-3 gap-3 mt-6">
-          <Stat icon={<ChartIcon size={16} />} label="Total Plays" value={totalPlays} />
-          <Stat icon={<HeartIcon size={16} />} label="Total Likes" value={totalLikes} />
-          <Stat icon={<UploadIcon size={16} />} label="Uploads" value={myTracks.length} />
+        <div className="flex gap-5 mt-3 text-xs">
+          <button onClick={() => setFollowModal('followers')} className="text-white hover:opacity-80"><b>{followers}</b> <span className="text-white/40">Followers</span></button>
+          <button onClick={() => setFollowModal('following')} className="text-white hover:opacity-80"><b>{followingIds.size}</b> <span className="text-white/40">Following</span></button>
         </div>
 
-        {favoriteGenres.length > 0 && (
-          <div className="mt-6">
-            <p className="text-xs text-white/40 mb-2">Favorite Genres</p>
-            <div className="flex gap-2 flex-wrap">
-              {favoriteGenres.map((g) => <span key={g} className="text-xs px-3 py-1.5 rounded-full bg-white/5 text-white/70">{g}</span>)}
-            </div>
-          </div>
-        )}
+        {/* Stats */}
+        <div className="grid grid-cols-3 gap-3 mt-5">
+          <Stat icon={<UploadIcon size={16} />} label="Uploads" value={myUploads.length} />
+          <Stat icon={<HeartIcon size={16} />} label="Liked" value={likedCount} />
+          <Stat icon={<ClockIcon size={16} />} label="Minutes" value={minutesListened} />
+        </div>
 
-        {myPlaylists.length > 0 && (
-          <div className="mt-7">
-            <p className="font-display font-bold text-white mb-3">My Playlists</p>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              {myPlaylists.slice(0, 6).map((p) => (
-                <div key={p.id} className="text-left">
-                  <div className="relative aspect-square"><Cover track={{ title: p.title, coverUrl: p.coverUrl }} size="fill" rounded="rounded-2xl" /></div>
-                  <p className="mt-1.5 text-sm text-white truncate">{p.title}</p>
+        {/* Creator / social shortcuts */}
+        <div className="mt-6 space-y-2">
+          <button
+            onClick={() => navigate('/channel-dashboard')}
+            className="w-full card-surface rounded-2xl p-4 flex items-center justify-between text-left"
+          >
+            <div className="flex items-center gap-3">
+              <ChannelIcon size={18} className="grad-brand-text" />
+              <div>
+                <p className="text-sm font-medium text-white">Creator Channel Studio</p>
+                <p className="text-xs text-white/40">Manage your public artist or podcast channel</p>
+              </div>
+            </div>
+            <span className="text-xs grad-brand-text font-semibold">Open →</span>
+          </button>
+
+          <button
+            onClick={() => navigate('/messages')}
+            className="w-full card-surface rounded-2xl p-4 flex items-center justify-between text-left"
+          >
+            <div className="flex items-center gap-3">
+              <MessageIcon size={18} className="grad-brand-text" />
+              <div>
+                <p className="text-sm font-medium text-white">Encrypted Messages & Groups</p>
+                <p className="text-xs text-white/40">Private DMs and group chats with friends</p>
+              </div>
+            </div>
+          </button>
+
+          <button
+            onClick={() => navigate('/notifications')}
+            className="w-full card-surface rounded-2xl p-4 flex items-center justify-between text-left"
+          >
+            <div className="flex items-center gap-3">
+              <BellIcon size={18} className="grad-brand-text" />
+              <div>
+                <p className="text-sm font-medium text-white">Notifications</p>
+                <p className="text-xs text-white/40">Follows, likes, channel approvals & room invites</p>
+              </div>
+            </div>
+            <NotifCount />
+          </button>
+
+          <button
+            onClick={enablePush}
+            className="w-full card-surface rounded-2xl p-4 flex items-center justify-between text-left"
+          >
+            <div className="flex items-center gap-3">
+              <BellIcon size={18} className="grad-brand-text" />
+              <div>
+                <p className="text-sm font-medium text-white">Push Alerts for New Releases</p>
+                <p className="text-xs text-white/40">
+                  {pushPerm === 'granted' ? 'Enabled on this device' : 'Get notified when artists drop tracks'}
+                </p>
+              </div>
+            </div>
+            <span className="text-xs font-medium px-3 py-1.5 rounded-full bg-white/10 text-white/70">
+              {pushPerm === 'granted' ? 'Active' : 'Enable'}
+            </span>
+          </button>
+
+          {isAdmin(user) && (
+            <button
+              onClick={() => navigate('/admin/reports')}
+              className="w-full card-surface rounded-2xl p-4 flex items-center justify-between text-left"
+            >
+              <div className="flex items-center gap-3">
+                <ShieldIcon size={18} className="grad-brand-text" />
+                <div>
+                  <p className="text-sm font-medium text-white">Moderation & Channel Review</p>
+                  <p className="text-xs text-white/40">Approve channels, badges, and review reports</p>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
+              </div>
+            </button>
+          )}
+        </div>
 
+        {/* App Accent Theme */}
+        <div className="mt-6">
+          <p className="text-xs text-white/40 mb-2 flex items-center gap-1.5"><ThemeIcon size={14} /> App Accent Color</p>
+          <div className="grid grid-cols-3 gap-2">
+            {THEMES.map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setAccent(t.key)}
+                className={`card-surface rounded-2xl p-3 text-left border ${
+                  accent === t.key ? 'border-white/40' : 'border-transparent'
+                }`}
+              >
+                <div
+                  className="w-full h-4 rounded-full mb-2"
+                  style={{ background: `linear-gradient(135deg, rgb(${t.primary}), rgb(${t.secondary}))` }}
+                />
+                <p className="text-xs text-white font-medium truncate">{t.label}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Listening Activity Timeline */}
         {history.length > 0 && (
           <div className="mt-7">
             <p className="font-display font-bold text-white mb-3">Activity Timeline</p>

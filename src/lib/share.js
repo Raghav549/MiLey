@@ -1,22 +1,47 @@
 /**
- * Whacka client SDK — share (stub)
- *
- * The implementation runs on the Whacka platform and is provided to your app at
- * runtime; it is intentionally NOT part of this export. This stub only keeps
- * your imports resolving and documents which Whacka APIs your code uses. Your
- * own code (components, pages, hooks) is the real, complete export. See README.
+ * MiLey Platform - Share Utility (mileymusic.space)
  */
 
-const __wk = (path) =>
-  new Proxy(function () {}, {
-    get: (_t, prop) =>
-      typeof prop === 'symbol' || prop === 'then' ? undefined : __wk(path + '.' + prop),
-    apply: () => {
-      throw new Error(
-        '`' + path + '` runs on the Whacka platform and is not available in exported code.'
-      );
-    },
-  });
+import { APP_DOMAIN } from './supabaseClient'
 
-export const isInAppBrowser = __wk('isInAppBrowser');
-export const share = __wk('share');
+export function isInAppBrowser() {
+  if (typeof navigator === 'undefined') return false
+  return /Instagram|FBAN|FBAV|Line|WebView|wv/i.test(navigator.userAgent || '')
+}
+
+export function normalizeShareUrl(url) {
+  if (!url) return APP_DOMAIN
+  try {
+    // Always share canonical mileymusic.space links when sharing externally
+    if (url.includes('/#/')) {
+      const hashPart = url.slice(url.indexOf('/#/'))
+      return `${APP_DOMAIN}${hashPart}`
+    }
+  } catch {}
+  return url
+}
+
+export async function link({ title = 'MiLey', text = '', url = APP_DOMAIN } = {}) {
+  const canonical = normalizeShareUrl(url)
+  if (typeof navigator !== 'undefined' && navigator.share) {
+    try {
+      await navigator.share({ title, text, url: canonical })
+      return { shared: true, url: canonical }
+    } catch { /* fallback to clipboard */ }
+  }
+  if (typeof navigator !== 'undefined' && navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(canonical)
+      return { copied: true, url: canonical }
+    } catch {}
+  }
+  return { url: canonical }
+}
+
+export const share = {
+  isInAppBrowser,
+  normalizeShareUrl,
+  link,
+}
+
+export default share

@@ -1,27 +1,25 @@
 import { useState } from 'react'
 import { db } from '../lib/db'
 import { storage } from '../lib/storage'
-import { ensureCategory, GENRE_SUGGESTIONS, LANGUAGE_SUGGESTIONS, MOOD_SUGGESTIONS } from '../musicHelpers'
-import { CloseIcon, TrashIcon, CoverIcon, BannerIcon, LockIcon, GlobeIcon, UsersIcon } from './icons'
+import { ensureCategory, GENRE_SUGGESTIONS, LANGUAGE_SUGGESTIONS, MOOD_SUGGESTIONS, SONG_THEME_PRESETS, getSongTheme } from '../musicHelpers'
+import { CloseIcon, CoverIcon, BannerIcon, GlobeIcon, UsersIcon, LockIcon, TrashIcon, ThemeIcon, CheckIcon } from './icons'
 
-// Edit any track/podcast metadata WITHOUT touching the audio file — title,
-// description, genre, language, mood, tags, cover, banner, lyrics, visibility,
-// release date, copyright note. Also supports permanent delete by the owner.
 export default function EditTrackModal({ track, onClose, onSaved, onDeleted }) {
   const [title, setTitle] = useState(track.title || '')
   const [description, setDescription] = useState(track.description || '')
   const [genre, setGenre] = useState(track.genre || '')
   const [language, setLanguage] = useState(track.language || '')
   const [mood, setMood] = useState(track.mood || '')
-  const [tags, setTags] = useState((track.tags || []).join(', '))
   const [lyrics, setLyrics] = useState(track.lyrics || '')
+  const [tags, setTags] = useState((track.tags || []).join(', '))
   const [visibility, setVisibility] = useState(track.visibility || 'public')
-  const [scheduledAt, setScheduledAt] = useState(track.scheduledAt ? track.scheduledAt.slice(0, 16) : '')
   const [copyright, setCopyright] = useState(track.copyrightInfo || '')
-  const [coverPreview, setCoverPreview] = useState(track.coverUrl || '')
+  const [scheduledAt, setScheduledAt] = useState(track.scheduledAt ? track.scheduledAt.slice(0, 16) : '')
   const [coverFile, setCoverFile] = useState(null)
-  const [bannerPreview, setBannerPreview] = useState(track.bannerUrl || '')
+  const [coverPreview, setCoverPreview] = useState(track.coverUrl || '')
   const [bannerFile, setBannerFile] = useState(null)
+  const [bannerPreview, setBannerPreview] = useState(track.bannerUrl || '')
+  const [songTheme, setSongTheme] = useState(() => getSongTheme(track))
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
@@ -39,6 +37,7 @@ export default function EditTrackModal({ track, onClose, onSaved, onDeleted }) {
         title: title.trim(), description, genre, language, mood, lyrics,
         tags: tags.split(',').map((t) => t.trim()).filter(Boolean),
         visibility, coverUrl, bannerUrl, copyrightInfo: copyright,
+        songTheme,
         scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : null,
       }
       await db.updateShared('tracks', track.id, patch)
@@ -80,6 +79,27 @@ export default function EditTrackModal({ track, onClose, onSaved, onDeleted }) {
           <datalist id="e-lang">{LANGUAGE_SUGGESTIONS.map((l) => <option key={l} value={l} />)}</datalist>
           <datalist id="e-genre">{GENRE_SUGGESTIONS.map((g) => <option key={g} value={g} />)}</datalist>
           <datalist id="e-mood">{MOOD_SUGGESTIONS.map((m) => <option key={m} value={m} />)}</datalist>
+        </div>
+
+        <p className="text-xs text-white/40 mb-2 flex items-center gap-1.5"><ThemeIcon size={13} /> Direct Upload Song Theme</p>
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          {SONG_THEME_PRESETS.map((preset) => {
+            const active = (songTheme?.key || songTheme?.id) === preset.key
+            return (
+              <button
+                key={preset.key}
+                type="button"
+                onClick={() => setSongTheme(preset)}
+                className={`flex items-center gap-2 px-2.5 py-2 rounded-xl text-left border transition-all ${
+                  active ? 'border-white bg-white/10 text-white' : 'border-white/10 bg-white/5 text-white/60'
+                }`}
+              >
+                <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ background: `linear-gradient(135deg, ${preset.primaryColor}, ${preset.secondaryColor})` }} />
+                <span className="text-[11px] font-medium truncate flex-1">{preset.name}</span>
+                {active && <CheckIcon size={12} />}
+              </button>
+            )
+          })}
         </div>
 
         <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags, comma separated" className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 mb-3 outline-none" />

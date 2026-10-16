@@ -8,7 +8,7 @@ import { getLikedTracks } from '../hooks/useLikes'
 import { useFollows } from '../hooks/useFollows'
 import { TrackRow, Cover } from '../components/TrackViews'
 import EmptyState from '../components/EmptyState'
-import { LibraryIcon, PlusIcon, HeartIcon, UploadIcon, UsersIcon, CloseIcon, CoverIcon, BannerIcon, LockIcon, GlobeIcon } from '../components/icons'
+import { LibraryIcon, PlusIcon, HeartIcon, UploadIcon, UsersIcon, CloseIcon, CoverIcon, BannerIcon, LockIcon, GlobeIcon, ChannelIcon } from '../components/icons'
 import { MOOD_SUGGESTIONS, GENRE_SUGGESTIONS, ensureCategory } from '../musicHelpers'
 import { useHasApprovedChannel } from '../permissions'
 
@@ -22,12 +22,12 @@ export default function Library() {
   const [liked, setLiked] = useState([])
   const { data: allPlaylists } = useLiveShared('playlists', { order: '-createdAt', limit: 200 })
   const { data: myUploads } = useLiveShared('tracks', { order: '-createdAt', limit: 300 })
-  const { followingIds } = useFollowingList()
+  const { followingRows, toggleFollow } = useFollows()
 
   const myPlaylists = useMemo(() => (allPlaylists || []).filter((p) => p.ownerId === user?.id), [allPlaylists, user])
   const myTracks = useMemo(() => (myUploads || []).filter((t) => t.artistId === user?.id), [myUploads, user])
 
-  useEffect(() => { getLikedTracks().then(setLiked) }, [])
+  useEffect(() => { getLikedTracks().then(setLiked) }, [tab])
 
   return (
     <div className="px-4 md:px-8 pt-[calc(env(safe-area-inset-top,0px)+0.9rem)] max-w-6xl mx-auto w-full">
@@ -86,7 +86,7 @@ export default function Library() {
       )}
 
       {tab === 'Following' && (
-        <FollowingTab ids={followingIds} />
+        <FollowingTab rows={followingRows} onUnfollow={(f) => toggleFollow(f.targetId || f.target_id, f.targetType, f.targetName, f.targetAvatar, f.targetUsername)} />
       )}
 
       {showCreate && <CreatePlaylistModal onClose={() => setShowCreate(false)} />}
@@ -94,31 +94,41 @@ export default function Library() {
   )
 }
 
-function useFollowingList() {
-  const user = auth.getCurrentUser()
-  const [followingIds, setFollowingIds] = useState([])
-  useEffect(() => {
-    if (!user) return
-    db.selectShared('follows', { followerId: user.id }, { limit: 300 }).then((rows) => setFollowingIds(rows)).catch(() => {})
-  }, [user])
-  return { followingIds }
-}
-
-function FollowingTab({ ids }) {
+function FollowingTab({ rows, onUnfollow }) {
   const navigate = useNavigate()
-  if (!ids.length) {
-    return <EmptyState icon={<UsersIcon size={24} className="grad-brand-text" />} title="Not following anyone yet" subtitle="Follow artists and users to see their new uploads here." />
+  if (!rows || !rows.length) {
+    return <EmptyState icon={<UsersIcon size={24} className="grad-brand-text" />} title="Not following anyone yet" subtitle="Follow artists and channels to see their new uploads here." />
   }
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-      {ids.map((f) => (
-        <button key={f.id} onClick={() => navigate(`/artist/${f.targetId}`)} className="flex flex-col items-center gap-2 card-surface rounded-2xl p-4">
-          <div className="w-16 h-16 rounded-full overflow-hidden bg-gradient-to-br from-emerald-500/30 to-pink-500/30 flex items-center justify-center border border-white/10">
-            {f.targetAvatar ? <img src={f.targetAvatar} className="w-full h-full object-cover" /> : <span className="font-display font-bold">{(f.targetName || '?')[0]}</span>}
+      {rows.map((f) => {
+        const targetId = f.targetId || f.target_id
+        const targetType = f.targetType || f.target_type || 'artist'
+        const targetName = f.targetName || f.target_name || 'MiLey user'
+        const targetAvatar = f.targetAvatar || f.target_avatar || ''
+        const targetUsername = f.targetUsername || f.target_username || ''
+        const go = () => {
+          if (targetType === 'channel' && targetUsername) navigate(`/channel/${targetUsername}`)
+          else navigate(`/artist/${targetId}`)
+        }
+        return (
+          <div key={f.id || targetId} className="flex flex-col items-center gap-2 card-surface rounded-2xl p-4">
+            <button onClick={go} className="flex flex-col items-center gap-2 w-full">
+              <div className="w-16 h-16 rounded-full overflow-hidden bg-gradient-to-br from-emerald-500/30 to-pink-500/30 flex items-center justify-center border border-white/10">
+                {targetAvatar ? <img src={targetAvatar} className="w-full h-full object-cover" /> : (targetType === 'channel' ? <ChannelIcon size={20} className="text-white/70" /> : <span className="font-display font-bold text-white">{(targetName || '?')[0]}</span>)}
+              </div>
+              <span className="text-sm text-white truncate w-full text-center font-medium">{targetName}</span>
+              <span className="text-[11px] text-white/40 capitalize">{targetType === 'channel' && targetUsername ? `@${targetUsername}` : targetType}</span>
+            </button>
+            <button
+              onClick={() => onUnfollow(f)}
+              className="mt-1 px-3.5 py-1 rounded-xl text-xs font-medium card-surface text-white/60 hover:text-white"
+            >
+              Following
+            </button>
           </div>
-          <span className="text-sm text-white truncate w-full text-center">{f.targetName || 'MiLey user'}</span>
-        </button>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -194,31 +204,31 @@ function CreatePlaylistModal({ onClose }) {
             <input type="file" accept="image/*" className="hidden" onChange={handleBanner} />
           </label>
         </div>
-
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Playlist title" className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 mb-3 outline-none" />
-        <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Description (optional)" rows={2} className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 mb-3 outline-none resize-none" />
-
-        <div className="grid grid-cols-2 gap-3 mb-3">
-          <input value={mood} onChange={(e) => setMood(e.target.value)} list="mood-list" placeholder="Mood (optional)" className="bg-white/5 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none" />
-          <input value={genre} onChange={(e) => setGenre(e.target.value)} list="genre-list" placeholder="Genre (optional)" className="bg-white/5 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none" />
-          <datalist id="mood-list">{MOOD_SUGGESTIONS.map((m) => <option key={m} value={m} />)}</datalist>
-          <datalist id="genre-list">{GENRE_SUGGESTIONS.map((g) => <option key={g} value={g} />)}</datalist>
+        <div className="space-y-2.5 mb-3">
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Playlist name" className="w-full bg-white/5 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-white/30 outline-none" />
+          <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Description (optional)" rows={2} className="w-full bg-white/5 rounded-xl px-3.5 py-2 text-xs text-white placeholder-white/30 outline-none resize-none" />
         </div>
 
-        <p className="text-xs text-white/40 mb-2">Visibility</p>
+        <div className="grid grid-cols-2 gap-2 mb-4">
+          <input value={mood} onChange={(e) => setMood(e.target.value)} list="pl-moods" placeholder="Mood (optional)" className="bg-white/5 rounded-xl px-3 py-2 text-xs text-white placeholder-white/30 outline-none" />
+          <input value={genre} onChange={(e) => setGenre(e.target.value)} list="pl-genres" placeholder="Genre (optional)" className="bg-white/5 rounded-xl px-3 py-2 text-xs text-white placeholder-white/30 outline-none" />
+          <datalist id="pl-moods">{MOOD_SUGGESTIONS.map((m) => <option key={m} value={m} />)}</datalist>
+          <datalist id="pl-genres">{GENRE_SUGGESTIONS.map((g) => <option key={g} value={g} />)}</datalist>
+        </div>
+
         {canPublic ? (
           <div className="flex gap-2 mb-5">
-            {[{ k: 'public', l: 'Public', Icon: GlobeIcon }, { k: 'friends', l: 'Friends Only', Icon: UsersIcon }, { k: 'private', l: 'Private', Icon: LockIcon }].map(({ k, l, Icon }) => (
+            {[{ k: 'public', l: 'Public', Icon: GlobeIcon }, { k: 'friends', l: 'Friends', Icon: UsersIcon }, { k: 'private', l: 'Private', Icon: LockIcon }].map(({ k, l, Icon }) => (
               <button key={k} onClick={() => setVisibility(k)} className={`flex-1 flex flex-col items-center gap-1 py-2.5 rounded-xl text-xs font-medium ${visibility === k ? 'btn-brand text-black' : 'bg-white/5 text-white/50'}`}>
-                <Icon size={16} /> {l}
+                <Icon size={16} />
+                {l}
               </button>
             ))}
           </div>
         ) : (
-          <div className="flex items-start gap-2 mb-5 rounded-xl bg-white/5 px-3 py-2.5">
-            <LockIcon size={16} className="text-white/40 mt-0.5 shrink-0" />
-            <p className="text-xs text-white/40">This playlist will be <span className="text-white/70">Private</span> — only you can see it. Create an approved Channel to publish public playlists.</p>
-          </div>
+          <p className="text-[11px] text-white/40 mb-4 card-surface rounded-xl px-3 py-2">
+            Your playlists are private for your own listening. Create & get an approved channel to publish public playlists.
+          </p>
         )}
 
         <button onClick={create} disabled={!title.trim() || saving} className="w-full btn-brand text-black font-semibold py-3 rounded-2xl text-sm disabled:opacity-50">

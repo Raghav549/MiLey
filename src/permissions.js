@@ -110,3 +110,15 @@ export function isActiveBan(mod) {
   if (!mod.banUntil) return true // permanent
   return new Date(mod.banUntil).getTime() > Date.now()
 }
+
+export function isAdmin(user = auth.getCurrentUser()) {
+  if (!user) return false
+  return isMainAdmin() || isPrachi(user) || Boolean(user.isAdmin)
+}
+
+export function canUploadChannel(channel, user = auth.getCurrentUser()) {
+  if (isAdmin(user)) return true
+  if (!channel) return false
+  return channel.status === 'approved' || !channel.status
+}
+

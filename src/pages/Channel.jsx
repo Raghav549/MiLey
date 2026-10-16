@@ -9,7 +9,7 @@ import { notify } from '../hooks/useNotifications'
 import { TrackRow, Cover } from '../components/TrackViews'
 import EmptyState from '../components/EmptyState'
 import FollowListModal from '../components/FollowListModal'
-import { BackIcon, ChannelIcon, MessageIcon, VerifiedIcon, LinkIcon, PodcastIcon, ChannelIcon as AnnounceIcon } from '../components/icons'
+import { BackIcon, ChannelIcon, MessageIcon, VerifiedIcon, LinkIcon, PodcastIcon, ChannelIcon as AnnounceIcon, PinIcon } from '../components/icons'
 import { isPublicVisible } from '../musicHelpers'
 
 export default function Channel() {
@@ -25,22 +25,37 @@ export default function Channel() {
   const { data: allAlbums } = useLiveShared('albums', { order: '-createdAt', limit: 100 })
   const { data: allPlaylists } = useLiveShared('playlists', { order: '-createdAt', limit: 100 })
   const { data: announcements } = useLiveShared('announcements', { order: '-createdAt', limit: 30 })
-  const { isFollowing, toggleFollow } = useFollows()
+  const { isFollowing, toggleFollow, followingIds } = useFollows()
 
   useEffect(() => {
     setLoading(true)
-    db.selectShared('channels', { username }, { limit: 1 }).then((r) => setChannel(r[0] || null)).finally(() => setLoading(false))
+    db.selectShared('channels', { username }, { limit: 1 })
+      .then((r) => {
+        if (r && r[0]) setChannel(r[0])
+        else return db.getShared('channels', username).then((byId) => setChannel(byId || null))
+      })
+      .finally(() => setLoading(false))
   }, [username])
 
   useEffect(() => {
     if (channel?.id) followerCount(channel.id).then(setFollowers)
-  }, [channel?.id])
+  }, [channel?.id, followingIds.size])
 
-  const songs = useMemo(() => (allTracks || []).filter((t) => t.channelId === channel?.id && t.type !== 'podcast' && isPublicVisible(t)), [allTracks, channel])
-  const episodes = useMemo(() => (allTracks || []).filter((t) => t.channelId === channel?.id && t.type === 'podcast' && isPublicVisible(t)), [allTracks, channel])
-  const albums = useMemo(() => (allAlbums || []).filter((a) => a.channelId === channel?.id), [allAlbums, channel])
-  const playlists = useMemo(() => (allPlaylists || []).filter((p) => p.channelId === channel?.id), [allPlaylists, channel])
+  const songs = useMemo(
+    () => (allTracks || []).filter((t) => (t.channelId === channel?.id || t.artistId === channel?.ownerId) && t.type !== 'podcast' && isPublicVisible(t)),
+    [allTracks, channel]
+  )
+  const episodes = useMemo(
+    () => (allTracks || []).filter((t) => (t.channelId === channel?.id || t.artistId === channel?.ownerId) && t.type === 'podcast' && isPublicVisible(t)),
+    [allTracks, channel]
+  )
+  const albums = useMemo(() => (allAlbums || []).filter((a) => a.channelId === channel?.id || a.artistId === channel?.ownerId), [allAlbums, channel])
+  const playlists = useMemo(() => (allPlaylists || []).filter((p) => p.channelId === channel?.id || p.ownerId === channel?.ownerId), [allPlaylists, channel])
   const posts = useMemo(() => (announcements || []).filter((a) => a.channelId === channel?.id), [announcements, channel])
+  const pinnedTrack = useMemo(
+    () => (channel?.pinnedTrackId ? (allTracks || []).find((t) => t.id === channel.pinnedTrackId) : null),
+    [allTracks, channel]
+  )
 
   if (loading) return null
   if (!channel) return <div className="h-full flex items-center justify-center text-white/40 text-sm">Channel not found.</div>
@@ -55,8 +70,12 @@ export default function Channel() {
   }
 
   const follow = async () => {
-    await toggleFollow(channel.id, 'channel', channel.name, channel.avatarUrl, channel.username)
-    if (!following) notify(channel.ownerId, { type: 'follow', title: 'New follower', body: `${me?.displayName || 'Someone'} followed ${channel.name}`, url: `/channel/${channel.username}` })
+    const nowFollowing = await toggleFollow(channel.id, 'channel', channel.name, channel.avatarUrl, channel.username)
+    const updatedCount = await followerCount(channel.id)
+    setFollowers(updatedCount)
+    if (nowFollowing) {
+      notify(channel.ownerId, { type: 'follow', title: 'New follower', body: `${me?.displayName || 'Someone'} followed ${channel.name}`, url: `/channel/${channel.username}` })
+    }
   }
 
   return (
@@ -92,6 +111,13 @@ export default function Channel() {
           <div className="flex gap-3 mt-2">
             {channel.socialLinks?.instagram && <a href={channel.socialLinks.instagram} target="_blank" rel="noreferrer" className="text-xs grad-brand-text flex items-center gap-1"><LinkIcon size={12} /> Instagram</a>}
             {channel.socialLinks?.website && <a href={channel.socialLinks.website} target="_blank" rel="noreferrer" className="text-xs grad-brand-text flex items-center gap-1"><LinkIcon size={12} /> Website</a>}
+          </div>
+        )}
+
+        {pinnedTrack && (
+          <div className="mt-4 card-surface rounded-2xl p-3">
+            <p className="text-[11px] grad-brand-text font-medium flex items-center gap-1 px-2 mb-1"><PinIcon size={12} /> Pinned Spotlight Release</p>
+            <TrackRow track={pinnedTrack} queueList={songs} showMenu={false} />
           </div>
         )}
 

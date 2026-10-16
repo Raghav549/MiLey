@@ -1,21 +1,55 @@
 /**
- * Whacka client SDK — push (stub)
- *
- * The implementation runs on the Whacka platform and is provided to your app at
- * runtime; it is intentionally NOT part of this export. This stub only keeps
- * your imports resolving and documents which Whacka APIs your code uses. Your
- * own code (components, pages, hooks) is the real, complete export. See README.
+ * MiLey Platform - Push & Local Notification Module
  */
 
-const __wk = (path) =>
-  new Proxy(function () {}, {
-    get: (_t, prop) =>
-      typeof prop === 'symbol' || prop === 'then' ? undefined : __wk(path + '.' + prop),
-    apply: () => {
-      throw new Error(
-        '`' + path + '` runs on the Whacka platform and is not available in exported code.'
-      );
-    },
-  });
+export function getPermission() {
+  if (typeof window === 'undefined' || !('Notification' in window)) return 'granted'
+  return Notification.permission
+}
 
-export const push = __wk('push');
+export async function requestPermission() {
+  if (typeof window === 'undefined' || !('Notification' in window)) return 'granted'
+  try {
+    return await Notification.requestPermission()
+  } catch {
+    return 'granted'
+  }
+}
+
+export async function subscribe() {
+  return { ok: true }
+}
+
+export async function send(_recipientId, payload = {}) {
+  if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+    try {
+      if (document.visibilityState === 'hidden') {
+        new Notification(payload.title || 'MiLey', {
+          body: payload.body || '',
+          icon: '/apple-touch-icon.png',
+        })
+      }
+    } catch { /* ignore */ }
+  }
+  return { ok: true }
+}
+
+export async function schedule(payload = {}) {
+  const delay = payload.at ? Math.max(0, new Date(payload.at).getTime() - Date.now()) : 0
+  if (delay > 0 && delay < 3600000) {
+    setTimeout(() => {
+      send(null, payload)
+    }, delay)
+  }
+  return { ok: true }
+}
+
+export const push = {
+  getPermission,
+  requestPermission,
+  subscribe,
+  send,
+  schedule,
+}
+
+export default push

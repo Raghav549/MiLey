@@ -6,16 +6,20 @@ import { storage } from '../lib/storage'
 import { useLiveShared } from '../lib/useLive'
 import { Cover } from '../components/TrackViews'
 import EmptyState from '../components/EmptyState'
-import { RoomIcon, PlusIcon, CloseIcon, CoverIcon, UsersIcon, LockIcon, GlobeIcon, CheckIcon } from '../components/icons'
+import { RoomIcon, PlusIcon, CloseIcon, CoverIcon, UsersIcon, LockIcon, GlobeIcon, CheckIcon, PlayIcon } from '../components/icons'
 import { ROOM_PURPOSES, ROOM_BACKGROUNDS, roomBackgroundCss, makeEmptySeats } from '../musicHelpers'
 
 export default function Rooms() {
   const navigate = useNavigate()
   const user = auth.getCurrentUser()
   const [showCreate, setShowCreate] = useState(false)
+  const [filterPurpose, setFilterPurpose] = useState('All')
   const { data: rooms, loading } = useLiveShared('voice_rooms', { order: '-createdAt', limit: 60 })
 
   const active = (rooms || []).filter((r) => !r.ended && (r.visibility !== 'private' || r.hostId === user?.id))
+  const filtered = filterPurpose === 'All'
+    ? active
+    : active.filter((r) => (r.purpose || '').toLowerCase() === filterPurpose.toLowerCase())
 
   return (
     <div className="px-4 md:px-8 pt-[calc(env(safe-area-inset-top,0px)+0.9rem)] max-w-6xl mx-auto w-full pb-8">
@@ -24,12 +28,26 @@ export default function Rooms() {
         <button onClick={() => setShowCreate(true)} className="w-10 h-10 rounded-full btn-brand flex items-center justify-center"><PlusIcon size={18} color="#0B0B0B" /></button>
       </div>
 
-      {!loading && active.length === 0 && (
+      <div className="flex gap-2 mb-5 overflow-x-auto no-scrollbar overscroll-x-contain">
+        {['All', ...ROOM_PURPOSES.filter((p) => p !== 'Custom')].map((p) => (
+          <button
+            key={p}
+            onClick={() => setFilterPurpose(p)}
+            className={`px-4 py-2 rounded-full text-xs font-medium shrink-0 ${
+              filterPurpose === p ? 'btn-brand text-black' : 'card-surface text-white/60'
+            }`}
+          >
+            {p}
+          </button>
+        ))}
+      </div>
+
+      {!loading && filtered.length === 0 && (
         <EmptyState icon={<RoomIcon size={24} className="grad-brand-text" />} title="No live voice rooms right now" subtitle="Start a room, invite friends onto the seats, chat live, and listen in perfect sync." action={<button onClick={() => setShowCreate(true)} className="btn-brand text-black font-semibold px-5 py-2.5 rounded-2xl text-sm">Start a Room</button>} />
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-        {active.map((r) => {
+        {filtered.map((r) => {
           const seated = (r.seats || []).filter(Boolean).length
           return (
             <button key={r.id} onClick={() => navigate(`/rooms/${r.id}`)} className="card-surface rounded-2xl p-4 text-left flex items-center gap-3 hover:bg-white/5 overflow-hidden relative">
@@ -40,7 +58,14 @@ export default function Rooms() {
                   <p className="text-sm font-semibold text-white truncate">{r.name}</p>
                 </div>
                 <p className="text-xs text-white/40 truncate">{r.purpose === 'Custom' ? r.customPurpose : r.purpose} · Hosted by {r.hostName}</p>
-                <p className="text-[11px] text-white/30 flex items-center gap-1 mt-0.5"><UsersIcon size={11} /> {seated}/9 on seats</p>
+                <div className="flex items-center gap-2 mt-1">
+                  <p className="text-[11px] text-white/40 flex items-center gap-1"><UsersIcon size={11} /> {seated}/9 on seats</p>
+                  {r.currentTrack && (
+                    <span className="text-[11px] grad-brand-text truncate flex items-center gap-1">
+                      <PlayIcon size={10} /> {r.currentTrack.title}
+                    </span>
+                  )}
+                </div>
               </div>
               {r.visibility === 'private' && <LockIcon size={14} className="text-white/30 shrink-0" />}
             </button>
@@ -75,11 +100,13 @@ function CreateRoomModal({ onClose, onCreated }) {
       let backgroundUrl = ''
       if (coverFile) { const r = await storage.upload(coverFile, coverFile.name); coverUrl = r.url }
       if (bgMode === 'custom' && bgFile) { const r = await storage.upload(bgFile, bgFile.name); backgroundUrl = r.url }
+      const seats = makeEmptySeats()
+      seats[0] = { userId: user.id, userName: user.displayName || 'MiLey user', avatarUrl: user.avatarUrl || '', muted: false }
       const room = await db.insertShared('voice_rooms', {
         name: name.trim(), hostId: user.id, hostName: user.displayName || 'MiLey user', hostAvatarUrl: user.avatarUrl || '',
         purpose, customPurpose: purpose === 'Custom' ? customPurpose.trim() : '', coverUrl,
         backgroundKey: bgMode === 'builtin' ? bgKey : '', backgroundUrl,
-        visibility, seats: makeEmptySeats(), seatLocks: Array(9).fill(false), admins: [], seatRequests: [],
+        visibility, seats, seatLocks: Array(9).fill(false), admins: [], seatRequests: [],
         currentTrack: null, isPlaying: false, position: 0, startedAt: null, queue: [], skipVotes: [],
         guestPlayAllowed: false, tempDJUserId: null, ended: false,
       }, undefined, { visibleTo: 'public', writableBy: 'anyone' })
