@@ -1,249 +1,135 @@
 import { useState } from 'react'
-import { X, Check, Image as ImageIcon, Sparkles } from 'lucide-react'
 import { db } from '../lib/db'
-import { storage, uploadSongThemeAsset } from '../lib/storage'
-import { GENRES, LANGUAGES, MOODS, SONG_THEME_PRESETS, VISUALIZER_STYLES, getSongTheme } from '../musicHelpers'
+import { storage } from '../lib/storage'
+import { ensureCategory, GENRE_SUGGESTIONS, LANGUAGE_SUGGESTIONS, MOOD_SUGGESTIONS, SONG_THEME_PRESETS, getSongTheme } from '../musicHelpers'
+import { CloseIcon, CoverIcon, BannerIcon, GlobeIcon, UsersIcon, LockIcon, TrashIcon, ThemeIcon, CheckIcon } from './icons'
 
-export default function EditTrackModal({ track, onClose }) {
-  const existingTheme = getSongTheme(track)
+export default function EditTrackModal({ track, onClose, onSaved, onDeleted }) {
   const [title, setTitle] = useState(track.title || '')
-  const [artistName, setArtistName] = useState(track.artistName || '')
-  const [genre, setGenre] = useState(track.genre || 'Bollywood')
-  const [language, setLanguage] = useState(track.language || 'Hindi')
-  const [mood, setMood] = useState(track.mood || 'happy')
+  const [description, setDescription] = useState(track.description || '')
+  const [genre, setGenre] = useState(track.genre || '')
+  const [language, setLanguage] = useState(track.language || '')
+  const [mood, setMood] = useState(track.mood || '')
   const [lyrics, setLyrics] = useState(track.lyrics || '')
+  const [tags, setTags] = useState((track.tags || []).join(', '))
+  const [visibility, setVisibility] = useState(track.visibility || 'public')
+  const [copyright, setCopyright] = useState(track.copyrightInfo || '')
+  const [scheduledAt, setScheduledAt] = useState(track.scheduledAt ? track.scheduledAt.slice(0, 16) : '')
   const [coverFile, setCoverFile] = useState(null)
-
-  // Song Theme Edit State
-  const [presetId, setPresetId] = useState(existingTheme.presetId || SONG_THEME_PRESETS[0].id)
-  const [themeName, setThemeName] = useState(existingTheme.name || SONG_THEME_PRESETS[0].name)
-  const [primaryColor, setPrimaryColor] = useState(existingTheme.primaryColor || '#00E0A8')
-  const [secondaryColor, setSecondaryColor] = useState(existingTheme.secondaryColor || '#FF3DAE')
-  const [visualizer, setVisualizer] = useState(existingTheme.visualizer || 'bars')
-  const [themeBgFile, setThemeBgFile] = useState(null)
+  const [coverPreview, setCoverPreview] = useState(track.coverUrl || '')
+  const [bannerFile, setBannerFile] = useState(null)
+  const [bannerPreview, setBannerPreview] = useState(track.bannerUrl || '')
+  const [songTheme, setSongTheme] = useState(() => getSongTheme(track))
   const [saving, setSaving] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
-  const selectPreset = (id) => {
-    const p = SONG_THEME_PRESETS.find((x) => x.id === id)
-    if (!p) return
-    setPresetId(p.id)
-    setThemeName(p.name)
-    setPrimaryColor(p.primaryColor)
-    setSecondaryColor(p.secondaryColor)
-    setVisualizer(p.visualizer)
-  }
-
-  const handleSave = async (e) => {
-    e.preventDefault()
-    if (!title.trim()) return
+  const save = async () => {
     setSaving(true)
     try {
-      let coverUrl = track.coverUrl || ''
-      if (coverFile) {
-        const up = await storage.upload('covers', coverFile)
-        coverUrl = up.url
+      let coverUrl = track.coverUrl
+      let bannerUrl = track.bannerUrl
+      if (coverFile) { const r = await storage.upload(coverFile, coverFile.name); coverUrl = r.url }
+      if (bannerFile) { const r = await storage.upload(bannerFile, bannerFile.name); bannerUrl = r.url }
+      if (genre) await ensureCategory(genre, 'genre')
+      if (language) await ensureCategory(language, 'language')
+      if (mood) await ensureCategory(mood, 'mood')
+      const patch = {
+        title: title.trim(), description, genre, language, mood, lyrics,
+        tags: tags.split(',').map((t) => t.trim()).filter(Boolean),
+        visibility, coverUrl, bannerUrl, copyrightInfo: copyright,
+        songTheme,
+        scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : null,
       }
-      let bgImageUrl = existingTheme.bgImageUrl || ''
-      if (themeBgFile) {
-        const upBg = await uploadSongThemeAsset(themeBgFile, track.id)
-        bgImageUrl = upBg.url
-      }
-      await db.updateShared('tracks', track.id, {
-        title: title.trim(),
-        artistName: artistName.trim(),
-        genre,
-        language,
-        mood,
-        lyrics: lyrics.trim(),
-        coverUrl,
-        songTheme: {
-          presetId,
-          name: themeName,
-          primaryColor,
-          secondaryColor,
-          visualizer,
-          bgImageUrl,
-        },
-      })
-      onClose()
-    } finally {
-      setSaving(false)
-    }
+      await db.updateShared('tracks', track.id, patch)
+      onSaved({ ...track, ...patch })
+    } catch (e) { /* ignore */ }
+    setSaving(false)
+  }
+
+  const del = async () => {
+    try { await db.deleteShared('tracks', track.id); onDeleted?.(track.id) } catch (e) { /* ignore */ }
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
-      onClick={onClose}
-    >
-      <form
-        onClick={(e) => e.stopPropagation()}
-        onSubmit={handleSave}
-        className="w-full max-w-md rounded-3xl bg-bg-secondary border border-white/15 p-5 space-y-3 max-h-[88vh] overflow-y-auto"
-      >
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-bold" style={{ fontFamily: 'var(--font-display)' }}>
-            Edit Track &amp; Song Theme
-          </h3>
-          <button type="button" onClick={onClose} className="p-1.5 rounded-full bg-white/5">
-            <X className="w-4 h-4" />
-          </button>
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-end md:items-center justify-center" style={{ height: 'var(--visual-height, 100dvh)' }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full md:max-w-md bg-[#141414] rounded-t-3xl md:rounded-3xl p-5 pb-[calc(env(safe-area-inset-bottom,0px)+1.25rem)] overflow-y-auto animate-sheet-up" style={{ maxHeight: 'calc(var(--visual-height, 100dvh) - 3rem)' }}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-display font-bold text-white text-lg">Edit {track.type === 'podcast' ? 'Episode' : 'Track'}</h3>
+          <button onClick={onClose} className="text-white/50"><CloseIcon size={18} /></button>
         </div>
 
-        <div>
-          <label className="text-[11px] text-text-secondary block mb-1">Title</label>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="w-full px-3 py-2 rounded-xl bg-bg-primary border border-white/10 text-sm focus:outline-none focus:border-accent-primary"
-          />
-        </div>
-
-        <div>
-          <label className="text-[11px] text-text-secondary block mb-1">Artist Name</label>
-          <input
-            value={artistName}
-            onChange={(e) => setArtistName(e.target.value)}
-            className="w-full px-3 py-2 rounded-xl bg-bg-primary border border-white/10 text-sm focus:outline-none focus:border-accent-primary"
-          />
-        </div>
-
-        <div className="grid grid-cols-3 gap-2">
-          <select
-            value={genre}
-            onChange={(e) => setGenre(e.target.value)}
-            className="px-2.5 py-2 rounded-xl bg-bg-primary border border-white/10 text-xs"
-          >
-            {GENRES.map((g) => (
-              <option key={g} value={g}>
-                {g}
-              </option>
-            ))}
-          </select>
-          <select
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-            className="px-2.5 py-2 rounded-xl bg-bg-primary border border-white/10 text-xs"
-          >
-            {LANGUAGES.map((l) => (
-              <option key={l} value={l}>
-                {l}
-              </option>
-            ))}
-          </select>
-          <select
-            value={mood}
-            onChange={(e) => setMood(e.target.value)}
-            className="px-2.5 py-2 rounded-xl bg-bg-primary border border-white/10 text-xs"
-          >
-            {MOODS.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Song Theme Editor */}
-        <div className="p-3 rounded-2xl bg-black/35 border border-white/10 space-y-2.5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold flex items-center gap-1">
-              <Sparkles className="w-3.5 h-3.5 text-accent-primary" /> Song Theme Studio
-            </span>
-            <span className="text-[10px] font-mono" style={{ color: primaryColor }}>
-              {themeName}
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-            {SONG_THEME_PRESETS.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => selectPreset(p.id)}
-                className={`px-2 py-1 rounded-lg text-[10px] font-semibold shrink-0 border ${
-                  presetId === p.id
-                    ? 'bg-white/15 border-white text-white'
-                    : 'bg-white/5 border-white/10 text-text-secondary'
-                }`}
-              >
-                {p.name}
-              </button>
-            ))}
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <div className="flex items-center gap-1.5 p-1.5 rounded-xl bg-bg-primary border border-white/10">
-              <input
-                type="color"
-                value={primaryColor}
-                onChange={(e) => setPrimaryColor(e.target.value)}
-                className="w-5 h-5 rounded cursor-pointer bg-transparent"
-              />
-              <span className="text-[10px] font-mono">{primaryColor}</span>
-            </div>
-            <div className="flex items-center gap-1.5 p-1.5 rounded-xl bg-bg-primary border border-white/10">
-              <input
-                type="color"
-                value={secondaryColor}
-                onChange={(e) => setSecondaryColor(e.target.value)}
-                className="w-5 h-5 rounded cursor-pointer bg-transparent"
-              />
-              <span className="text-[10px] font-mono">{secondaryColor}</span>
-            </div>
-            <select
-              value={visualizer}
-              onChange={(e) => setVisualizer(e.target.value)}
-              className="px-2 py-1.5 rounded-xl bg-bg-primary border border-white/10 text-[10px]"
-            >
-              {VISUALIZER_STYLES.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <label className="flex items-center justify-center gap-1.5 p-2 rounded-xl border border-dashed border-accent-primary/40 bg-accent-primary/10 cursor-pointer text-[11px] font-semibold text-accent-primary">
-            <ImageIcon className="w-3.5 h-3.5" />
-            <span className="truncate">
-              {themeBgFile ? themeBgFile.name : 'Replace Direct Song Theme Background'}
-            </span>
-            <input
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(e) => setThemeBgFile(e.target.files?.[0] || null)}
-            />
+        <div className="flex gap-3 mb-4">
+          <label className="w-20 h-20 rounded-2xl card-surface overflow-hidden cursor-pointer shrink-0">
+            {coverPreview ? <img src={coverPreview} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center"><CoverIcon size={20} className="text-white/30" /></div>}
+            <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setCoverFile(f); setCoverPreview(URL.createObjectURL(f)) } }} />
+          </label>
+          <label className="flex-1 rounded-2xl card-surface overflow-hidden cursor-pointer">
+            {bannerPreview ? <img src={bannerPreview} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center py-6"><BannerIcon size={20} className="text-white/30" /></div>}
+            <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setBannerFile(f); setBannerPreview(URL.createObjectURL(f)) } }} />
           </label>
         </div>
 
-        <label className="flex items-center justify-center gap-2 p-3 rounded-xl bg-bg-primary border border-dashed border-white/15 cursor-pointer text-xs">
-          <ImageIcon className="w-4 h-4 text-accent-primary" />
-          <span className="truncate">{coverFile ? coverFile.name : 'Replace Cover Image'}</span>
-          <input
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => setCoverFile(e.target.files?.[0] || null)}
-          />
-        </label>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 mb-3 outline-none" />
+        <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Description" rows={2} className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 mb-3 outline-none resize-none" />
 
-        <div>
-          <label className="text-[11px] text-text-secondary block mb-1">Lyrics (LRC or plain)</label>
-          <textarea
-            value={lyrics}
-            onChange={(e) => setLyrics(e.target.value)}
-            rows={4}
-            className="w-full px-3 py-2 rounded-xl bg-bg-primary border border-white/10 text-xs font-mono focus:outline-none focus:border-accent-primary"
-          />
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          <input value={language} onChange={(e) => setLanguage(e.target.value)} list="e-lang" placeholder="Language" className="bg-white/5 rounded-xl px-3 py-2.5 text-xs text-white placeholder-white/30 outline-none" />
+          <input value={genre} onChange={(e) => setGenre(e.target.value)} list="e-genre" placeholder="Genre" className="bg-white/5 rounded-xl px-3 py-2.5 text-xs text-white placeholder-white/30 outline-none" />
+          <input value={mood} onChange={(e) => setMood(e.target.value)} list="e-mood" placeholder="Mood" className="bg-white/5 rounded-xl px-3 py-2.5 text-xs text-white placeholder-white/30 outline-none" />
+          <datalist id="e-lang">{LANGUAGE_SUGGESTIONS.map((l) => <option key={l} value={l} />)}</datalist>
+          <datalist id="e-genre">{GENRE_SUGGESTIONS.map((g) => <option key={g} value={g} />)}</datalist>
+          <datalist id="e-mood">{MOOD_SUGGESTIONS.map((m) => <option key={m} value={m} />)}</datalist>
         </div>
 
-        <button
-          type="submit"
-          disabled={saving}
-          className="w-full py-3 rounded-full bg-accent-primary text-[#0B0B0B] font-bold text-xs flex items-center justify-center gap-1.5"
-        >
-          <Check className="w-4 h-4" /> {saving ? 'Saving...' : 'Save Track & Song Theme'}
-        </button>
-      </form>
+        <p className="text-xs text-white/40 mb-2 flex items-center gap-1.5"><ThemeIcon size={13} /> Direct Upload Song Theme</p>
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          {SONG_THEME_PRESETS.map((preset) => {
+            const active = (songTheme?.key || songTheme?.id) === preset.key
+            return (
+              <button
+                key={preset.key}
+                type="button"
+                onClick={() => setSongTheme(preset)}
+                className={`flex items-center gap-2 px-2.5 py-2 rounded-xl text-left border transition-all ${
+                  active ? 'border-white bg-white/10 text-white' : 'border-white/10 bg-white/5 text-white/60'
+                }`}
+              >
+                <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ background: `linear-gradient(135deg, ${preset.primaryColor}, ${preset.secondaryColor})` }} />
+                <span className="text-[11px] font-medium truncate flex-1">{preset.name}</span>
+                {active && <CheckIcon size={12} />}
+              </button>
+            )
+          })}
+        </div>
+
+        <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags, comma separated" className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 mb-3 outline-none" />
+        <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value)} placeholder="Lyrics (plain, or timed lines like [00:12] your line)" rows={4} className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 mb-3 outline-none resize-none" />
+        <input value={copyright} onChange={(e) => setCopyright(e.target.value)} placeholder="Copyright info (e.g. © 2026 Your Name)" className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 mb-3 outline-none" />
+
+        <p className="text-xs text-white/40 mb-2">Release date (scheduled publishing)</p>
+        <input type="datetime-local" value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white mb-3 outline-none [color-scheme:dark]" />
+
+        <p className="text-xs text-white/40 mb-2">Visibility</p>
+        <div className="flex gap-2 mb-5">
+          {[{ k: 'public', l: 'Public', Icon: GlobeIcon }, { k: 'friends', l: 'Friends', Icon: UsersIcon }, { k: 'private', l: 'Private', Icon: LockIcon }].map(({ k, l, Icon }) => (
+            <button key={k} onClick={() => setVisibility(k)} className={`flex-1 flex flex-col items-center gap-1 py-2.5 rounded-xl text-xs font-medium ${visibility === k ? 'btn-brand text-black' : 'bg-white/5 text-white/50'}`}><Icon size={16} /> {l}</button>
+          ))}
+        </div>
+
+        {confirmDelete ? (
+          <div className="card-surface rounded-2xl p-4 mb-3">
+            <p className="text-sm text-white mb-3">Permanently delete this {track.type === 'podcast' ? 'episode' : 'track'}? This can't be undone.</p>
+            <div className="flex gap-2">
+              <button onClick={() => setConfirmDelete(false)} className="flex-1 card-surface py-2.5 rounded-xl text-sm text-white">Cancel</button>
+              <button onClick={del} className="flex-1 bg-red-500/90 py-2.5 rounded-xl text-sm text-white font-semibold">Delete</button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={() => setConfirmDelete(true)} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm text-red-400 mb-3"><TrashIcon size={15} /> Delete permanently</button>
+        )}
+
+        <button onClick={save} disabled={saving || !title.trim()} className="w-full btn-brand text-black font-semibold py-3 rounded-2xl text-sm disabled:opacity-50">{saving ? 'Saving…' : 'Save Changes'}</button>
+      </div>
     </div>
   )
 }

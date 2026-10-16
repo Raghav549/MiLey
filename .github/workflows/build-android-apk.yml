@@ -1,0 +1,110 @@
+name: Build Installable Android APK
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Build Signed Installable MiLey APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install web dependencies & build production bundle
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_APP_OWNER_ID: ${{ secrets.VITE_APP_OWNER_ID }}
+          VITE_SITE_URL: https://mileymusic.space
+        run: |
+          npm install
+          npm run build
+          mkdir -p android/app/src/main/assets/public
+          cp -r dist/* android/app/src/main/assets/public/
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle 8.5
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: Generate Android Release Signing Keystore
+        working-directory: android/app
+        run: |
+          if [ ! -f miley-release.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore miley-release.keystore \
+              -alias miley \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass mileymusic2026 \
+              -keypass mileymusic2026 \
+              -dname "CN=mileymusic.space, OU=Mobile, O=MiLey, L=Patna, S=Bihar, C=IN"
+          fi
+
+      - name: Build Signed Release & Debug APKs with Gradle
+        working-directory: android
+        run: |
+          gradle assembleRelease assembleDebug --no-daemon
+          mkdir -p ../apk-dist
+          cp app/build/outputs/apk/release/app-release.apk ../apk-dist/MiLey-installable.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ../apk-dist/MiLey-debug.apk
+          ls -lh ../apk-dist/
+
+      - name: Upload Installable APK to GitHub Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiLey-Installable-Android-APK
+          path: |
+            apk-dist/MiLey-installable.apk
+            apk-dist/MiLey-debug.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish Installable APK to GitHub Releases
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-apk
+          name: "MiLey Installable Android APK (mileymusic.space)"
+          body: |
+            ### MiLey Native Android App (`space.mileymusic.app`)
+            - **Direct Installable Signed Release APK**: `MiLey-installable.apk`
+            - **Debug APK**: `MiLey-debug.apk`
+            - **Features**:
+              - Original MiLey Emerald & Pink (`#0B0B0B`) design, navigation & custom SVG icons preserved
+              - Animated Splash Screen (`SplashActivity`)
+              - Continuous background music playback (`MusicPlaybackService`)
+              - Camera Top Bar Pro Music Banner (`CameraTopBarService`)
+              - Bulk Song Upload with Direct Upload Song Themes
+              - Voice Rooms, Channels & Artist Profiles on `https://mileymusic.space`
+          prerelease: false
+          files: |
+            apk-dist/MiLey-installable.apk
+            apk-dist/MiLey-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,115 +1,138 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { db } from '../lib/db'
 import { auth } from '../lib/auth'
-import { useLiveShared } from '../lib/useLive'
-import { notifyUser } from './useNotifications'
+
+const followListeners = new Set()
+function notifyFollowListeners() {
+  followListeners.forEach((fn) => {
+    try { fn() } catch (e) { /* ignore */ }
+  })
+}
 
 export function useFollows() {
-  const user = auth.getCurrentUser()
-  const { data: allFollows = [] } = useLiveShared('follows', { order: '-createdAt', limit: 1000 })
+  const [followingRows, setFollowingRows] = useState([])
+  const [followingIds, setFollowingIds] = useState(new Set())
+  const [loaded, setLoaded] = useState(false)
 
-  const myFollows = useMemo(() => {
-    if (!user?.id) return []
-    return allFollows.filter((r) => r.followerId === user.id)
-  }, [allFollows, user?.id])
+  const refresh = useCallback(async () => {
+    const user = auth.getCurrentUser()
+    if (!user) {
+      setFollowingRows([])
+      setFollowingIds(new Set())
+      setLoaded(true)
+      return
+    }
+    try {
+      const rows = await db.selectShared('follows', { followerId: user.id }, { limit: 500 })
+      const list = Array.isArray(rows) ? rows : []
+      setFollowingRows(list)
+      setFollowingIds(new Set(list.map((r) => r.targetId || r.target_id).filter(Boolean)))
+    } catch (e) { /* ignore */ }
+    setLoaded(true)
+  }, [])
 
-  const followingIds = useMemo(() => {
-    return new Set(myFollows.map((r) => r.targetId).filter(Boolean))
-  }, [myFollows])
+  useEffect(() => {
+    refresh()
+    followListeners.add(refresh)
+    const unsubAuth = auth.onAuthChange(() => refresh())
+    return () => {
+      followListeners.delete(refresh)
+      unsubAuth?.()
+    }
+  }, [refresh])
 
-  const isFollowing = useCallback(
-    (targetId) => Boolean(targetId && followingIds.has(targetId)),
-    [followingIds]
-  )
+  const isFollowing = useCallback((targetId) => followingIds.has(targetId), [followingIds])
 
-  const getFollowersOf = useCallback(
-    (targetId) => {
-      if (!targetId) return []
-      return allFollows.filter((r) => r.targetId === targetId)
-    },
-    [allFollows]
-  )
+  const toggleFollow = useCallback(async (targetId, targetType = 'artist', targetName = 'MiLey Artist', targetAvatar = '', targetUsername = '') => {
+    if (!targetId) return false
+    if (!auth.isAuthenticated()) {
+      await auth.signIn()
+      if (!auth.isAuthenticated()) return false
+    }
+    const user = auth.getCurrentUser()
+    if (!user || user.id === targetId) return false
 
-  const getFollowingOf = useCallback(
-    (userId) => {
-      if (!userId) return []
-      return allFollows.filter((r) => r.followerId === userId)
-    },
-    [allFollows]
-  )
+    const id = `${user.id}:${targetId}`
+    const already = followingIds.has(targetId)
 
-  const getFollowerCount = useCallback(
-    (targetId) => getFollowersOf(targetId).length,
-    [getFollowersOf]
-  )
+    setFollowingIds((prev) => {
+      const next = new Set(prev)
+      if (already) next.delete(targetId)
+      else next.add(targetId)
+      return next
+    })
 
-  const getFollowingCount = useCallback(
-    (userId) => getFollowingOf(userId).length,
-    [getFollowingOf]
-  )
-
-  const toggleFollow = useCallback(
-    async (targetId, meta = {}) => {
-      const currentUser = auth.getCurrentUser()
-      if (!currentUser?.id || !targetId || targetId === currentUser.id) return false
-      const key = `${currentUser.id}:${targetId}`
-      const currently = followingIds.has(targetId)
-
-      if (currently) {
-        await db.deleteShared('follows', key).catch(() => {})
-        // Also delete any duplicate record matching followerId + targetId
-        const existing = allFollows.filter(
-          (r) => r.followerId === currentUser.id && r.targetId === targetId
-        )
-        for (const row of existing) {
-          if (row.id && row.id !== key) {
-            await db.deleteShared('follows', row.id).catch(() => {})
-          }
-        }
-        return false
+    try {
+      if (already) {
+        const existing = followingRows.find((r) => (r.targetId || r.target_id) === targetId)
+        await db.deleteShared('follows', existing?.id || id)
       } else {
-        const myProf = await db.getShared('profiles', currentUser.id).catch(() => null)
-        const targetProf = await db.getShared('profiles', targetId).catch(() => null)
-        await db
-          .upsertShared(
-            'follows',
-            {
-              followerId: currentUser.id,
-              followerName: myProf?.displayName || currentUser.displayName || 'MiLey Creator',
-              followerAvatar: myProf?.avatarUrl || currentUser.avatarUrl || '',
-              targetId,
-              targetType: meta.targetType || 'artist',
-              targetName: meta.targetName || targetProf?.displayName || 'MiLey Artist',
-              targetAvatar: meta.targetAvatar || targetProf?.avatarUrl || '',
-              targetUsername: meta.targetUsername || targetProf?.customUsername || '',
-            },
-            key,
-            { visibleTo: 'public' }
-          )
-          .catch(() => {})
-
-        notifyUser({
-          recipientId: targetId,
-          type: 'follow',
-          title: `${myProf?.displayName || currentUser.displayName || 'Someone'} started following you`,
-          body: meta.targetType === 'channel' ? `Subscribed to @${meta.targetUsername || meta.targetName || 'your channel'}` : 'Tap to view their profile',
-          link: `/artist/${currentUser.id}`,
-        })
-        return true
+        await db.insertShared('follows', {
+          followerId: user.id,
+          targetId,
+          targetType: targetType || 'artist',
+          targetName: targetName || 'MiLey user',
+          targetAvatar: targetAvatar || '',
+          targetUsername: targetUsername || null,
+          followerName: user.displayName || 'MiLey user',
+          followerAvatar: user.avatarUrl || '',
+        }, id, { visibleTo: 'public' })
       }
-    },
-    [followingIds, allFollows]
-  )
+      await refresh()
+      notifyFollowListeners()
+      return !already
+    } catch (e) {
+      await refresh()
+      return already
+    }
+  }, [followingIds, followingRows, refresh])
 
-  return {
-    followingIds,
-    followingList: myFollows,
-    allFollows,
-    isFollowing,
-    getFollowersOf,
-    getFollowingOf,
-    getFollowerCount,
-    getFollowingCount,
-    toggleFollow,
+  return { isFollowing, toggleFollow, followingRows, followingIds, loaded, refresh }
+}
+
+export async function followerCount(targetId) {
+  if (!targetId) return 0
+  try {
+    const rows = await db.selectShared('follows', { targetId }, { limit: 500 })
+    return Array.isArray(rows) ? rows.length : 0
+  } catch (e) {
+    return 0
   }
+}
+
+export async function followingCount(userId) {
+  if (!userId) return 0
+  try {
+    const rows = await db.selectShared('follows', { followerId: userId }, { limit: 500 })
+    return Array.isArray(rows) ? rows.length : 0
+  } catch (e) {
+    return 0
+  }
+}
+
+// Full clickable list of who follows `targetId`.
+export async function getFollowersList(targetId) {
+  try {
+    const rows = await db.selectShared('follows', { targetId }, { limit: 500 })
+    return (rows || []).map((r) => ({
+      id: r.followerId || r.follower_id,
+      name: r.followerName || r.follower_name || 'MiLey user',
+      avatarUrl: r.followerAvatar || r.follower_avatar || '',
+      kind: 'user',
+    }))
+  } catch (e) { return [] }
+}
+
+// Full clickable list of who/what `userId` follows.
+export async function getFollowingList(userId) {
+  try {
+    const rows = await db.selectShared('follows', { followerId: userId }, { limit: 500 })
+    return (rows || []).map((r) => ({
+      id: r.targetId || r.target_id,
+      name: r.targetName || r.target_name || 'MiLey user',
+      avatarUrl: r.targetAvatar || r.target_avatar || '',
+      kind: r.targetType || r.target_type || 'user',
+      username: r.targetUsername || r.target_username || '',
+    }))
+  } catch (e) { return [] }
 }

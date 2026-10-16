@@ -1,154 +1,245 @@
-import { APP_DOMAIN } from './lib/supabaseClient'
-import { makeSvgArt } from './lib/localBackend'
+import { db } from './lib/db'
 
-export { APP_DOMAIN }
+// Default suggestions — users can also type any custom language, genre or mood;
+// new values are persisted to the shared `categories` table so everyone sees them.
+export const GENRE_SUGGESTIONS = ['Pop', 'Hip-Hop', 'Rock', 'Electronic', 'R&B', 'Jazz', 'Classical', 'Acoustic', 'Indie', 'Lo-Fi', 'Folk', 'Devotional', 'Synthwave', 'Bollywood', 'Afrobeats']
+export const LANGUAGE_SUGGESTIONS = ['Hindi', 'English', 'Punjabi', 'Tamil', 'Telugu', 'Bengali', 'Marathi', 'Spanish', 'Korean', 'Arabic', 'Instrumental']
+export const MOOD_SUGGESTIONS = ['Chill', 'Sad', 'Romantic', 'Workout', 'Study', 'Party', 'Late Night', 'Focus']
 
-export const GENRES = [
-  'Bollywood', 'Classical', 'Pop', 'Hip-Hop', 'R&B', 'Electronic', 'Rock',
-  'Indie', 'Punjabi', 'Sufi', 'Devotional', 'Lo-Fi', 'Jazz', 'Acoustic', 'Podcast',
-]
+export const GENRES = GENRE_SUGGESTIONS
+export const LANGUAGES = LANGUAGE_SUGGESTIONS
+export const MOODS = MOOD_SUGGESTIONS
 
-export const LANGUAGES = [
-  'Hindi', 'English', 'Punjabi', 'Tamil', 'Telugu', 'Bengali',
-  'Marathi', 'Spanish', 'Korean', 'Instrumental',
-]
-
-export const MOODS = [
-  { id: 'happy', label: 'Happy', color: '#FFBE0B', gradient: 'from-amber-500/30 to-orange-600/10' },
-  { id: 'chill', label: 'Chill', color: '#00E0A8', gradient: 'from-emerald-500/30 to-teal-700/10' },
-  { id: 'romantic', label: 'Romantic', color: '#FF3DAE', gradient: 'from-pink-500/30 to-rose-700/10' },
-  { id: 'workout', label: 'Workout', color: '#FF5722', gradient: 'from-orange-500/30 to-red-700/10' },
-  { id: 'sad', label: 'Melancholy', color: '#6366F1', gradient: 'from-indigo-500/30 to-slate-800/10' },
-  { id: 'party', label: 'Party', color: '#A855F7', gradient: 'from-purple-500/30 to-pink-700/10' },
-  { id: 'focus', label: 'Focus', color: '#06B6D4', gradient: 'from-cyan-500/30 to-blue-800/10' },
-  { id: 'devotional', label: 'Peace', color: '#F59E0B', gradient: 'from-yellow-500/30 to-amber-800/10' },
-]
-
+// Built-in presets for Direct Upload Song Themes (used in single & bulk upload)
 export const SONG_THEME_PRESETS = [
   {
-    id: 'cyber-neon',
-    name: 'Cyber Neon Pulse',
+    key: 'emerald_pulse',
+    id: 'emerald_pulse',
+    name: 'MiLey Signature',
     primaryColor: '#00E0A8',
-    secondaryColor: '#06B6D4',
-    visualizer: 'bars',
-    bgStyle: 'radial-gradient(circle at 20% 20%, rgba(0,224,168,0.42), rgba(6,182,212,0.18) 55%, #08090E 100%)',
-    previewBg: makeSvgArt('THEME', 'CYBER NEON', '#00E0A8', '#080C18'),
+    secondaryColor: '#FF3DAE',
+    accentColor: '#6EE7B7',
+    bgGradient: 'linear-gradient(135deg, rgba(0,224,168,0.28) 0%, rgba(255,61,174,0.24) 55%, #0B0B0B 100%)',
+    visualizerStyle: 'bars',
+    animatedBg: 'aurora',
+    lyricsGlow: true,
+    particleEffect: 'sparkles',
+    badgeLabel: 'Signature',
   },
   {
-    id: 'velvet-rose',
-    name: 'Velvet Rose Glow',
+    key: 'cyber_pink',
+    id: 'cyber_pink',
+    name: 'Cyber Rosé',
     primaryColor: '#FF3DAE',
-    secondaryColor: '#9333EA',
-    visualizer: 'circular',
-    bgStyle: 'radial-gradient(circle at 80% 20%, rgba(255,61,174,0.45), rgba(147,51,234,0.2) 55%, #0D0714 100%)',
-    previewBg: makeSvgArt('THEME', 'VELVET ROSE', '#FF3DAE', '#16081C'),
+    secondaryColor: '#A855F7',
+    accentColor: '#F472B6',
+    bgGradient: 'linear-gradient(135deg, rgba(255,61,174,0.32) 0%, rgba(168,85,247,0.24) 55%, #0B0B0B 100%)',
+    visualizerStyle: 'wave',
+    animatedBg: 'nebula',
+    lyricsGlow: true,
+    particleEffect: 'neon_orbs',
+    badgeLabel: 'Cyber Rosé',
   },
   {
-    id: 'royal-gold',
-    name: 'Royal Gold Stage',
+    key: 'midnight_cyan',
+    id: 'midnight_cyan',
+    name: 'Oceanic Cyan',
+    primaryColor: '#06B6D4',
+    secondaryColor: '#3B82F6',
+    accentColor: '#67E8F9',
+    bgGradient: 'linear-gradient(135deg, rgba(6,182,212,0.30) 0%, rgba(59,130,246,0.24) 55%, #0B0B0B 100%)',
+    visualizerStyle: 'circle',
+    animatedBg: 'waves',
+    lyricsGlow: true,
+    particleEffect: 'rain',
+    badgeLabel: 'Oceanic',
+  },
+  {
+    key: 'solar_gold',
+    id: 'solar_gold',
+    name: 'Solar Flare',
     primaryColor: '#F59E0B',
     secondaryColor: '#EF4444',
-    visualizer: 'vinyl',
-    bgStyle: 'radial-gradient(circle at 50% 15%, rgba(245,158,11,0.45), rgba(239,68,68,0.18) 55%, #120B07 100%)',
-    previewBg: makeSvgArt('THEME', 'ROYAL GOLD', '#F59E0B', '#180E06'),
+    accentColor: '#FDE047',
+    bgGradient: 'linear-gradient(135deg, rgba(245,158,11,0.30) 0%, rgba(239,68,68,0.24) 55%, #0B0B0B 100%)',
+    visualizerStyle: 'pulse',
+    animatedBg: 'ember',
+    lyricsGlow: true,
+    particleEffect: 'embers',
+    badgeLabel: 'Solar Gold',
   },
   {
-    id: 'emerald-monsoon',
-    name: 'Emerald Monsoon',
-    primaryColor: '#10B981',
-    secondaryColor: '#0EA5E9',
-    visualizer: 'wave',
-    bgStyle: 'radial-gradient(circle at 25% 30%, rgba(16,185,129,0.42), rgba(14,165,233,0.18) 55%, #061012 100%)',
-    previewBg: makeSvgArt('THEME', 'MONSOON', '#10B981', '#061316'),
-  },
-  {
-    id: 'sakura-starlight',
-    name: 'Sakura Starlight',
-    primaryColor: '#EC4899',
-    secondaryColor: '#6366F1',
-    visualizer: 'orbs',
-    bgStyle: 'radial-gradient(circle at 70% 25%, rgba(236,72,153,0.42), rgba(99,102,241,0.22) 55%, #0B0818 100%)',
-    previewBg: makeSvgArt('THEME', 'SAKURA', '#EC4899', '#0E0920'),
-  },
-  {
-    id: 'cosmic-studio',
-    name: 'Cosmic Studio 808',
-    primaryColor: '#A855F7',
+    key: 'velvet_violet',
+    id: 'velvet_violet',
+    name: 'Velvet Haze',
+    primaryColor: '#8B5CF6',
     secondaryColor: '#EC4899',
-    visualizer: 'bars',
-    bgStyle: 'radial-gradient(circle at 50% 20%, rgba(168,85,247,0.45), rgba(236,72,153,0.20) 55%, #090612 100%)',
-    previewBg: makeSvgArt('THEME', 'COSMIC 808', '#A855F7', '#11081F'),
+    accentColor: '#C4B5FD',
+    bgGradient: 'linear-gradient(135deg, rgba(139,92,246,0.30) 0%, rgba(236,72,153,0.24) 55%, #0B0B0B 100%)',
+    visualizerStyle: 'galaxy',
+    animatedBg: 'vinyl',
+    lyricsGlow: true,
+    particleEffect: 'dust',
+    badgeLabel: 'Velvet Haze',
   },
   {
-    id: 'midnight-aurora',
-    name: 'Midnight Aurora',
-    primaryColor: '#38BDF8',
-    secondaryColor: '#00E0A8',
-    visualizer: 'circular',
-    bgStyle: 'radial-gradient(circle at 30% 20%, rgba(56,189,248,0.42), rgba(0,224,168,0.18) 55%, #060B14 100%)',
-    previewBg: makeSvgArt('THEME', 'AURORA', '#38BDF8', '#060D1A'),
+    key: 'crimson_stage',
+    id: 'crimson_stage',
+    name: 'Crimson Stage',
+    primaryColor: '#F43F5E',
+    secondaryColor: '#FB923C',
+    accentColor: '#FDA4AF',
+    bgGradient: 'linear-gradient(135deg, rgba(244,63,94,0.32) 0%, rgba(251,146,60,0.22) 55%, #0B0B0B 100%)',
+    visualizerStyle: 'spectrum',
+    animatedBg: 'laser',
+    lyricsGlow: true,
+    particleEffect: 'lasers',
+    badgeLabel: 'Stage Live',
   },
 ]
 
 export const VISUALIZER_STYLES = [
-  { id: 'bars', label: 'Spectrum Bars' },
-  { id: 'circular', label: 'Circular Halo' },
-  { id: 'vinyl', label: 'Vinyl Pulse' },
-  { id: 'wave', label: 'Wave Ribbon' },
-  { id: 'orbs', label: 'Floating Orbs' },
+  { id: 'bars', label: 'Studio Bars' },
+  { id: 'wave', label: 'Silk Wave' },
+  { id: 'circle', label: 'Halo Ring' },
+  { id: 'pulse', label: 'Bass Pulse' },
+  { id: 'galaxy', label: 'Vinyl Orbit' },
+  { id: 'spectrum', label: 'Laser Spectrum' },
 ]
 
 export function getSongTheme(track) {
-  const defaultPreset = SONG_THEME_PRESETS[0]
-  if (!track) return defaultPreset
-  const custom = track.songTheme || {}
-  const preset = SONG_THEME_PRESETS.find((p) => p.id === custom.presetId) || defaultPreset
-  const primaryColor = custom.primaryColor || preset.primaryColor || '#00E0A8'
-  const secondaryColor = custom.secondaryColor || preset.secondaryColor || '#FF3DAE'
-  const visualizer = custom.visualizer || preset.visualizer || 'bars'
-  const name = custom.name || preset.name || 'Cyber Neon Pulse'
-  const bgImageUrl = custom.bgImageUrl || ''
-  const bgStyle = `radial-gradient(circle at 30% 20%, ${primaryColor}55, ${secondaryColor}28 55%, #08080C 100%)`
-  return {
-    presetId: custom.presetId || preset.id,
-    name,
-    primaryColor,
-    secondaryColor,
-    visualizer,
-    bgImageUrl,
-    bgStyle,
+  if (!track) return SONG_THEME_PRESETS[0]
+  const raw = track.songTheme || track.song_theme
+  if (raw && typeof raw === 'object' && raw.primaryColor) {
+    const preset = SONG_THEME_PRESETS.find((p) => p.key === (raw.key || raw.id)) || SONG_THEME_PRESETS[0]
+    return { ...preset, ...raw }
   }
+  if (typeof raw === 'string') {
+    const found = SONG_THEME_PRESETS.find((p) => p.key === raw || p.id === raw)
+    if (found) return found
+  }
+  return SONG_THEME_PRESETS[0]
+}
+
+export const ROOM_PURPOSES = ['Music', 'Friends', 'Chill', 'Gaming', 'Podcast', 'Discussion', 'Study', 'Community', 'Custom']
+
+export const ROOM_SEAT_COUNT = 9
+
+export const COVER_PLACEHOLDER_GRADIENTS = [
+  'from-emerald-500/40 to-pink-500/40',
+  'from-pink-500/40 to-emerald-400/30',
+  'from-emerald-400/30 to-purple-500/30',
+  'from-fuchsia-500/30 to-emerald-500/30',
+]
+
+export function gradientFor(seed) {
+  const s = (seed || '').split('').reduce((a, c) => a + c.charCodeAt(0), 0)
+  return COVER_PLACEHOLDER_GRADIENTS[s % COVER_PLACEHOLDER_GRADIENTS.length]
+}
+
+
+function makeRoomSvgBanner(c1, c2, c3) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 1200"><defs><radialGradient id="a" cx="20%" cy="15%" r="70%"><stop offset="0%" stop-color="${c1}" stop-opacity="0.55"/><stop offset="100%" stop-color="#0B0B0B" stop-opacity="0"/></radialGradient><radialGradient id="b" cx="85%" cy="80%" r="70%"><stop offset="0%" stop-color="${c2}" stop-opacity="0.5"/><stop offset="100%" stop-color="#0B0B0B" stop-opacity="0"/></radialGradient><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${c3}"/><stop offset="100%" stop-color="#07070C"/></linearGradient></defs><rect width="800" height="1200" fill="url(#bg)"/><rect width="800" height="1200" fill="url(#a)"/><rect width="800" height="1200" fill="url(#b)"/></svg>`
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
 }
 
 export const ROOM_BACKGROUNDS = [
-  { id: 'neon', label: 'Neon Stage', style: 'radial-gradient(circle at 30% 20%, rgba(0,224,168,0.35), transparent 55%), radial-gradient(circle at 80% 70%, rgba(255,61,174,0.3), transparent 55%), #0B0B0B' },
-  { id: 'sunset', label: 'Sunset Lounge', style: 'linear-gradient(160deg, #3b0a2a 0%, #1a0b2e 50%, #0b0b0b 100%)' },
-  { id: 'ocean', label: 'Midnight Ocean', style: 'linear-gradient(160deg, #042f2e 0%, #0c192c 55%, #0b0b0b 100%)' },
-  { id: 'gold', label: 'Royal Gold', style: 'radial-gradient(circle at 50% 10%, rgba(245,158,11,0.32), transparent 60%), #0B0B0B' },
-  { id: 'cyber', label: 'Cyber Grid', style: 'radial-gradient(circle at 20% 80%, rgba(168,85,247,0.38), transparent 50%), radial-gradient(circle at 80% 20%, rgba(6,182,212,0.32), transparent 50%), #0B0B0B' },
-  { id: 'crimson', label: 'Velvet Crimson', style: 'linear-gradient(160deg, #3b0712 0%, #1a0610 55%, #0b0b0b 100%)' },
-  { id: 'nebula', label: 'Cosmic Nebula', url: makeSvgArt('NEBULA', 'COSMIC STAGE', '#A855F7', '#090616') },
-  { id: 'city', label: 'Night City', url: makeSvgArt('CYBER CITY', 'TOKYO NIGHTS', '#00E0A8', '#061018') },
-  { id: 'vinyl', label: 'Vinyl Studio', url: makeSvgArt('VINYL 808', 'ANALOG ROOM', '#F59E0B', '#140C06') },
+  {
+    key: 'aurora',
+    label: 'Aurora Stage',
+    url: makeRoomSvgBanner('#00E0A8', '#FF3DAE', '#081318'),
+    css: 'radial-gradient(circle at 20% 15%, rgba(0,224,168,0.42), transparent 55%), radial-gradient(circle at 80% 85%, rgba(255,61,174,0.38), transparent 55%), linear-gradient(160deg, #071318 0%, #14091E 55%, #08080C 100%)',
+  },
+  {
+    key: 'sunset',
+    label: 'Velvet Lounge',
+    url: makeRoomSvgBanner('#FF3DAE', '#F59E0B', '#1A0916'),
+    css: 'radial-gradient(circle at 75% 20%, rgba(255,61,174,0.45), transparent 55%), radial-gradient(circle at 25% 80%, rgba(251,146,60,0.35), transparent 55%), linear-gradient(160deg, #1A0916 0%, #1F1108 55%, #09080C 100%)',
+  },
+  {
+    key: 'ocean',
+    label: 'Midnight Neon',
+    url: makeRoomSvgBanner('#38BDF8', '#6366F1', '#071224'),
+    css: 'radial-gradient(circle at 25% 25%, rgba(56,189,248,0.42), transparent 55%), radial-gradient(circle at 80% 75%, rgba(99,102,241,0.42), transparent 55%), linear-gradient(160deg, #071224 0%, #0E0B26 55%, #07070C 100%)',
+  },
+  {
+    key: 'violet',
+    label: 'Cyber Pulse',
+    url: makeRoomSvgBanner('#A855F7', '#EC4899', '#140824'),
+    css: 'radial-gradient(circle at 30% 20%, rgba(168,85,247,0.45), transparent 55%), radial-gradient(circle at 75% 80%, rgba(236,72,153,0.38), transparent 55%), linear-gradient(160deg, #140824 0%, #1F091D 55%, #09070C 100%)',
+  },
+  {
+    key: 'gold',
+    label: 'Golden Hour',
+    url: makeRoomSvgBanner('#FBBF24', '#F43F5E', '#1C1406'),
+    css: 'radial-gradient(circle at 70% 20%, rgba(251,191,36,0.4), transparent 55%), radial-gradient(circle at 25% 80%, rgba(244,63,94,0.32), transparent 55%), linear-gradient(160deg, #1C1406 0%, #1C0B10 55%, #090808 100%)',
+  },
 ]
 
-export function roomBgStyle(bgId, customUrl) {
-  if (bgId === 'custom' && customUrl) {
+export function roomBackgroundCss(key) {
+  return (ROOM_BACKGROUNDS.find((b) => b.key === key) || ROOM_BACKGROUNDS[0]).css
+}
+
+export function roomBackgroundStyle(roomOrKey) {
+  if (typeof roomOrKey === 'string') {
+    const preset = ROOM_BACKGROUNDS.find((b) => b.key === roomOrKey) || ROOM_BACKGROUNDS[0]
+    if (preset.url) {
+      return {
+        backgroundImage: `linear-gradient(180deg, rgba(8,8,12,0.45) 0%, rgba(8,8,12,0.75) 65%, rgba(8,8,12,0.92) 100%), url(${preset.url})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+      }
+    }
+    return { background: preset.css }
+  }
+  const room = roomOrKey
+  const custom = room?.backgroundUrl
+  if (custom) {
     return {
-      backgroundImage: `linear-gradient(to bottom, rgba(11,11,11,0.45), rgba(11,11,11,0.88)), url(${customUrl})`,
+      backgroundImage: `linear-gradient(180deg, rgba(8,8,12,0.55) 0%, rgba(8,8,12,0.78) 60%, rgba(8,8,12,0.92) 100%), url(${custom})`,
       backgroundSize: 'cover',
       backgroundPosition: 'center',
     }
   }
-  const found = ROOM_BACKGROUNDS.find(b => b.id === bgId) || ROOM_BACKGROUNDS[0]
-  if (found.url) {
+  const preset = ROOM_BACKGROUNDS.find((b) => b.key === room?.backgroundKey) || ROOM_BACKGROUNDS[0]
+  if (preset.url) {
     return {
-      backgroundImage: `linear-gradient(to bottom, rgba(11,11,11,0.45), rgba(11,11,11,0.88)), url(${found.url})`,
+      backgroundImage: `linear-gradient(180deg, rgba(8,8,12,0.45) 0%, rgba(8,8,12,0.75) 65%, rgba(8,8,12,0.92) 100%), url(${preset.url})`,
       backgroundSize: 'cover',
       backgroundPosition: 'center',
     }
   }
-  return { background: found.style }
+  return { background: preset.css }
+}
+
+export function makeEmptySeats() {
+  return Array.from({ length: 9 }, () => null)
+}
+
+export const PROFILE_THEMES = [
+  { key: 'signature', label: 'Signature', grad: 'from-emerald-500/30 to-pink-500/30' },
+  { key: 'ocean', label: 'Ocean', grad: 'from-cyan-500/30 to-blue-600/30' },
+  { key: 'sunset', label: 'Sunset', grad: 'from-orange-500/30 to-pink-600/30' },
+  { key: 'violet', label: 'Violet', grad: 'from-purple-500/30 to-indigo-600/30' },
+]
+
+export function profileThemeGrad(key) {
+  return (PROFILE_THEMES.find((t) => t.key === key) || PROFILE_THEMES[0]).grad
+}
+
+const GRADIENTS = [
+  'linear-gradient(135deg, #00E0A8 0%, #0EA5E9 100%)',
+  'linear-gradient(135deg, #FF3DAE 0%, #8B5CF6 100%)',
+  'linear-gradient(135deg, #F59E0B 0%, #EC4899 100%)',
+  'linear-gradient(135deg, #10B981 0%, #3B82F6 100%)',
+  'linear-gradient(135deg, #EC4899 0%, #6366F1 100%)',
+  'linear-gradient(135deg, #06B6D4 0%, #A855F7 100%)',
+]
+
+export function coverGradient(seed = '') {
+  let h = 0
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
+  return GRADIENTS[h % GRADIENTS.length]
 }
 
 export function formatDuration(sec) {
@@ -158,80 +249,43 @@ export function formatDuration(sec) {
   return `${m}:${s < 10 ? '0' : ''}${s}`
 }
 
-export function formatCount(n) {
-  const num = Number(n) || 0
-  if (num >= 1_000_000) return (num / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
-  if (num >= 1_000) return (num / 1_000).toFixed(1).replace(/\.0$/, '') + 'K'
-  return String(num)
+export function timeAgo(iso) {
+  if (!iso) return ''
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000
+  if (diff < 60) return 'just now'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
 }
 
-export function parseLyrics(raw) {
-  if (!raw || typeof raw !== 'string') return { synced: false, lines: [] }
-  const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
-  const lrcRe = /^\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]\s*(.*)$/
-  const parsed = []
-  let syncedCount = 0
+export function parseLyrics(raw = '') {
+  if (!raw) return { synced: false, lines: [] }
+  const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean)
+  const timed = []
+  const re = /^\[(\d{1,2}):(\d{2})(?:\.(\d{1,2}))?\]\s*(.*)$/
   for (const line of lines) {
-    const m = line.match(lrcRe)
+    const m = line.match(re)
     if (m) {
-      syncedCount++
-      const min = parseInt(m[1], 10)
-      const sec = parseInt(m[2], 10)
-      const ms = m[3] ? parseInt(m[3].padEnd(3, '0'), 10) : 0
-      parsed.push({ time: min * 60 + sec + ms / 1000, text: m[4] || '♪' })
-    } else {
-      parsed.push({ time: null, text: line })
+      const t = parseInt(m[1], 10) * 60 + parseInt(m[2], 10) + (m[3] ? parseInt(m[3], 10) / 100 : 0)
+      timed.push({ time: t, text: m[4] || '♪' })
     }
   }
-  if (syncedCount >= 2) {
-    return {
-      synced: true,
-      lines: parsed.filter(l => l.time !== null).sort((a, b) => a.time - b.time),
-    }
-  }
-  return { synced: false, lines: parsed.map((l, i) => ({ time: i * 4, text: l.text })) }
+  if (timed.length >= 2) return { synced: true, lines: timed }
+  return { synced: false, lines: lines.map((text) => ({ time: 0, text })) }
 }
 
-export function fallbackCover(seed = 'MiLey') {
-  const palette = [
-    ['#00E0A8', '#0D9488'],
-    ['#FF3DAE', '#9333EA'],
-    ['#FFBE0B', '#F97316'],
-    ['#06B6D4', '#3B82F6'],
-    ['#A855F7', '#EC4899'],
-  ]
-  let h = 0
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
-  const [c1, c2] = palette[h % palette.length]
-  return `linear-gradient(135deg, ${c1}, ${c2})`
+export async function ensureCategory(name, kind) {
+  const clean = (name || '').trim()
+  if (!clean) return
+  const id = `${kind}:${clean.toLowerCase()}`
+  try {
+    await db.upsertShared('categories', { name: clean, kind }, id, { visibleTo: 'public' })
+  } catch (e) { /* ignore */ }
 }
 
-export const GENRE_SUGGESTIONS = GENRES
-export const LANGUAGE_SUGGESTIONS = LANGUAGES
-export const MOOD_SUGGESTIONS = MOODS.map((m) => m.label)
-
-export function isPublicVisible(item) {
-  if (!item) return false
-  if (item.isHidden || item.deleted) return false
-  if (item.visibility && item.visibility !== 'public') return false
+export function isPublicVisible(track) {
+  if (!track) return false
+  if (track.visibility && track.visibility !== 'public') return false
+  if (track.scheduledAt && new Date(track.scheduledAt).getTime() > Date.now()) return false
   return true
 }
-
-export async function ensureCategory(name, _type = 'genre') {
-  return (name || '').trim()
-}
-
-export function timeAgo(iso) {
-  if (!iso) return 'just now'
-  const diff = Math.max(0, Date.now() - new Date(iso).getTime())
-  const sec = Math.floor(diff / 1000)
-  if (sec < 60) return 'just now'
-  const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}m ago`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}h ago`
-  const days = Math.floor(hr / 24)
-  if (days < 30) return `${days}d ago`
-  return new Date(iso).toLocaleDateString()
-}
-

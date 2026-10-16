@@ -81,8 +81,16 @@ npm run build
 
 ---
 
-## 📱 Building the Native Android App (`/android`)
+## 📱 Building & Installing the Native Android APK (`/android` + GitHub Actions)
 
+### Option A: Automatic Installable APK in GitHub (Recommended — Zero Local Android Setup)
+This repository includes a pre-configured GitHub Actions workflow (`.github/workflows/build-android-apk.yml`) that builds, signs, and publishes an installable Android APK (`MiLey-installable.apk` and `MiLey-debug.apk`) automatically on every push:
+1. Open your GitHub repository (`Raghav549/MiLey`).
+2. Go to the **Actions** tab → **Build Installable Android APK** (or click **Releases** → `latest-apk`).
+3. Download **`MiLey-installable.apk`** (or the `MiLey-Installable-Android-APK` workflow artifact) and install it directly on your Android phone.
+4. *(Optional)* Add `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_APP_OWNER_ID` under **GitHub Repo → Settings → Secrets and variables → Actions** to bake your live cloud credentials into the APK.
+
+### Option B: Building Locally with Android Studio / Gradle
 1. Sync the latest web build into the Android assets folder:
    ```bash
    npm run android:sync
@@ -90,7 +98,7 @@ npm run build
 2. Open the `/android` folder in **Android Studio** (or build via Gradle CLI):
    ```bash
    cd android
-   ./gradlew assembleDebug
+   gradle assembleRelease assembleDebug
    ```
 3. Install the generated APK on any Android device:
    - Grant **Notification** and **Display over other apps** permissions when prompted to enable the **Native Floating Camera Top Bar Music Banner** when the app is closed or minimized.

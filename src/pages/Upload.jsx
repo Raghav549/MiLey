@@ -1,1468 +1,675 @@
-import { useState, useMemo, useEffect } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
-import {
-  Upload as UploadIcon,
-  Music,
-  Image as ImageIcon,
-  Disc,
-  Mic2,
-  Plus,
-  Trash2,
-  CheckCircle2,
-  AlertCircle,
-  Radio,
-  Sparkles,
-  UserPlus,
-  X,
-  Layers,
-  Palette,
-  Wand2,
-  Activity,
-} from 'lucide-react'
-import { storage, uploadSongThemeAsset } from '../lib/storage'
-import { db } from '../lib/db'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { auth } from '../lib/auth'
+import { db } from '../lib/db'
+import { storage } from '../lib/storage'
 import { social } from '../lib/social'
-import { useLiveShared } from '../lib/useLive'
 import {
-  GENRES,
-  LANGUAGES,
-  MOODS,
-  SONG_THEME_PRESETS,
-  VISUALIZER_STYLES,
+  ensureCategory, GENRE_SUGGESTIONS, LANGUAGE_SUGGESTIONS, MOOD_SUGGESTIONS,
+  SONG_THEME_PRESETS, VISUALIZER_STYLES,
 } from '../musicHelpers'
-import { canUploadChannel } from '../permissions'
-import { notifyFollowers, notifyUser } from '../hooks/useNotifications'
-import { makeSvgArt } from '../lib/localBackend'
+import { canUploadDirect } from '../permissions'
+import {
+  UploadIcon, CoverIcon, BannerIcon, CheckIcon, TrashIcon, LockIcon,
+  GlobeIcon, UsersIcon, CollabIcon, ChannelIcon, ThemeIcon, SparkleIcon, PlusIcon,
+} from '../components/icons'
+
+const TYPES = [
+  { key: 'song', label: 'Song' },
+  { key: 'bulk', label: 'Bulk Songs' },
+  { key: 'podcast', label: 'Podcast' },
+  { key: 'album', label: 'Album' },
+]
+
+const AUDIO_ACCEPT = '.mp3,.wav,.flac,.aac,.ogg,audio/*'
 
 function readAudioDuration(file) {
   return new Promise((resolve) => {
-    try {
-      const url = URL.createObjectURL(file)
-      const a = new Audio()
-      a.preload = 'metadata'
-      a.onloadedmetadata = () => {
-        const d = isFinite(a.duration) ? Math.round(a.duration) : 0
-        URL.revokeObjectURL(url)
-        resolve(d)
-      }
-      a.onerror = () => {
-        URL.revokeObjectURL(url)
-        resolve(0)
-      }
-      a.src = url
-    } catch {
-      resolve(0)
-    }
+    const url = URL.createObjectURL(file)
+    const audio = new Audio()
+    audio.preload = 'metadata'
+    audio.onloadedmetadata = () => { resolve(audio.duration || 0); URL.revokeObjectURL(url) }
+    audio.onerror = () => resolve(0)
+    audio.src = url
   })
 }
 
 export default function Upload() {
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
   const user = auth.getCurrentUser()
-  const { data: channels = [] } = useLiveShared('channels', { order: '-createdAt', limit: 200 })
-  const myChannel = useMemo(
-    () => channels.find((c) => c.ownerId === user?.id),
-    [channels, user?.id]
-  )
-
-  const [mode, setMode] = useState(() => {
-    const m = searchParams.get('mode')
-    return m === 'bulk' || m === 'single' || m === 'album' || m === 'podcast' ? m : 'bulk'
-  })
+  const [type, setType] = useState('song')
+  const [title, setTitle] = useState('')
+  const [artistName, setArtistName] = useState(user?.displayName || '')
+  const [language, setLanguage] = useState('')
+  const [genre, setGenre] = useState('')
+  const [mood, setMood] = useState('')
+  const [lyrics, setLyrics] = useState('')
+  const [visibility, setVisibility] = useState('public')
+  const [scheduledAt, setScheduledAt] = useState('')
+  const [copyright, setCopyright] = useState(false)
+  const [coverFile, setCoverFile] = useState(null)
+  const [coverPreview, setCoverPreview] = useState('')
+  const [bannerFile, setBannerFile] = useState(null)
+  const [bannerPreview, setBannerPreview] = useState('')
+  const [audioFile, setAudioFile] = useState(null)
+  const [albumTracks, setAlbumTracks] = useState([]) // [{file, title, songTheme}]
+  const [bulkTracks, setBulkTracks] = useState([]) // [{id, file, synthUrl, title, genre, mood, language, lyrics, songTheme, expanded}]
+  const [singleSongTheme, setSingleSongTheme] = useState(SONG_THEME_PRESETS[0])
+  const [seasonNumber, setSeasonNumber] = useState('')
+  const [episodeNumber, setEpisodeNumber] = useState('')
+  const [channel, setChannel] = useState(null)
+  const [channelLoaded, setChannelLoaded] = useState(false)
+  const [uploadsSuspended, setUploadsSuspended] = useState(false)
+  const [coArtistQuery, setCoArtistQuery] = useState('')
+  const [coArtistResults, setCoArtistResults] = useState([])
+  const [coArtists, setCoArtists] = useState([])
+  const [dragOver, setDragOver] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [progressLabel, setProgressLabel] = useState('')
+  const [done, setDone] = useState(false)
+  const audioInputRef = useRef(null)
 
   useEffect(() => {
-    const m = searchParams.get('mode')
-    if (m && ['bulk', 'single', 'album', 'podcast'].includes(m)) {
-      setMode(m)
-    }
-  }, [searchParams])
+    if (!user) return
+    db.selectShared('channels', { ownerId: user.id }, { limit: 1 }).then((r) => setChannel(r[0] || null)).catch(() => {}).finally(() => setChannelLoaded(true))
+    db.getShared('user_moderation', user.id).then((m) => setUploadsSuspended(!!m?.uploadsSuspended)).catch(() => {})
+  }, [])
 
-  // Single / Album / Podcast State
-  const [title, setTitle] = useState('')
-  const [artistName, setArtistName] = useState(user?.displayName || 'MiLey Studio Creator')
-  const [genre, setGenre] = useState('Bollywood')
-  const [language, setLanguage] = useState('Hindi')
-  const [mood, setMood] = useState('happy')
-  const [lyrics, setLyrics] = useState('')
-  const [coverFile, setCoverFile] = useState(null)
-  const [audioFile, setAudioFile] = useState(null)
-  const [albumTracks, setAlbumTracks] = useState([{ title: '', file: null, lyrics: '' }])
-  const [collaborators, setCollaborators] = useState([])
-  const [collabQuery, setCollabQuery] = useState('')
-  const [collabResults, setCollabResults] = useState([])
+  useEffect(() => {
+    if (!coArtistQuery.trim()) { setCoArtistResults([]); return }
+    const t = setTimeout(() => {
+      social.searchUsers(coArtistQuery.trim()).then(setCoArtistResults).catch(() => setCoArtistResults([]))
+    }, 250)
+    return () => clearTimeout(t)
+  }, [coArtistQuery])
 
-  // Single Song Direct Song Theme State
-  const [singleThemePresetId, setSingleThemePresetId] = useState(SONG_THEME_PRESETS[0].id)
-  const [singleThemeName, setSingleThemeName] = useState(SONG_THEME_PRESETS[0].name)
-  const [singlePrimaryColor, setSinglePrimaryColor] = useState(SONG_THEME_PRESETS[0].primaryColor)
-  const [singleSecondaryColor, setSingleSecondaryColor] = useState(
-    SONG_THEME_PRESETS[0].secondaryColor
-  )
-  const [singleVisualizer, setSingleVisualizer] = useState(SONG_THEME_PRESETS[0].visualizer)
-  const [singleThemeBgFile, setSingleThemeBgFile] = useState(null)
-  const [singleThemeBgPreview, setSingleThemeBgPreview] = useState('')
-
-  // ── BULK SONG UPLOAD + PER-SONG DIRECT UPLOAD SONG THEMES STATE ──
-  const [bulkItems, setBulkItems] = useState([])
-  const [batchGenre, setBatchGenre] = useState('Electronic')
-  const [batchLanguage, setBatchLanguage] = useState('English')
-  const [batchMood, setBatchMood] = useState('party')
-  const [batchPresetId, setBatchPresetId] = useState(SONG_THEME_PRESETS[0].id)
-
-  const [uploading, setUploading] = useState(false)
-  const [progressText, setProgressText] = useState('')
-  const [error, setError] = useState('')
-  const [done, setDone] = useState(false)
-
-  const searchCollabs = async (q) => {
-    setCollabQuery(q)
-    if (!q.trim()) {
-      setCollabResults([])
-      return
-    }
-    try {
-      const res = await social.searchUsers(q.trim())
-      setCollabResults(
-        (res || []).filter(
-          (u) => u.id !== user?.id && !collaborators.some((c) => c.id === u.id)
-        )
-      )
-    } catch {
-      setCollabResults([])
-    }
+  const reset = () => {
+    setTitle(''); setLanguage(''); setGenre(''); setMood(''); setLyrics(''); setScheduledAt('')
+    setCopyright(false); setCoverFile(null); setCoverPreview(''); setBannerFile(null); setBannerPreview('')
+    setAudioFile(null); setAlbumTracks([]); setBulkTracks([]); setDone(false)
   }
 
-  const addCollab = (u) => {
-    setCollaborators((prev) => [
-      ...prev,
-      { id: u.id, displayName: u.displayName || 'Artist', avatarUrl: u.avatarUrl || '' },
-    ])
-    setCollabQuery('')
-    setCollabResults([])
+  const handleCover = (e) => {
+    const f = e.target.files?.[0]; if (!f) return
+    setCoverFile(f); setCoverPreview(URL.createObjectURL(f))
   }
-
-  const removeCollab = (id) =>
-    setCollaborators((prev) => prev.filter((c) => c.id !== id))
-
-  const addAlbumRow = () =>
-    setAlbumTracks((prev) => [...prev, { title: '', file: null, lyrics: '' }])
-  const removeAlbumRow = (i) =>
-    setAlbumTracks((prev) => prev.filter((_, idx) => idx !== i))
-  const updateAlbumRow = (i, patch) =>
-    setAlbumTracks((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)))
-
-  // Add multiple audio files to the Bulk Upload Queue, each initialized with a unique Song Theme
-  const handleBulkFilesSelect = async (fileList) => {
-    const files = Array.from(fileList || [])
-    if (files.length === 0) return
-    setError('')
-    const existingCount = bulkItems.length
-
-    const newEntries = await Promise.all(
-      files.map(async (file, idx) => {
-        const dur = await readAudioDuration(file)
-        const preset =
-          SONG_THEME_PRESETS[(existingCount + idx) % SONG_THEME_PRESETS.length]
-        const rawTitle = file.name.replace(/\.[^/.]+$/, '').replace(/[-_]+/g, ' ')
-        return {
-          id: `bulk-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
-          file,
-          syntheticAudioUrl: '',
-          title: rawTitle || `Studio Track ${existingCount + idx + 1}`,
-          artistName: myChannel?.name || user?.displayName || 'MiLey Studio Creator',
-          genre: batchGenre,
-          language: batchLanguage,
-          mood: batchMood,
-          duration: dur || 195,
-          lyrics: '',
-          coverFile: null,
-          coverPreview: '',
-          // Direct Upload Song Theme per track
-          themePresetId: preset.id,
-          themeName: preset.name,
-          primaryColor: preset.primaryColor,
-          secondaryColor: preset.secondaryColor,
-          visualizer: preset.visualizer,
-          themeBgFile: null,
-          themeBgPreview: '',
-          status: 'ready', // 'ready' | 'uploading' | 'done' | 'error'
-        }
-      })
-    )
-    setBulkItems((prev) => [...prev, ...newEntries])
+  const handleBanner = (e) => {
+    const f = e.target.files?.[0]; if (!f) return
+    setBannerFile(f); setBannerPreview(URL.createObjectURL(f))
   }
-
-  // Instant 1-Click Sample Studio Pack for testing Bulk Song Upload + Direct Song Themes immediately
-  const loadSampleBulkStudioPack = () => {
-    setError('')
-    const sampleDefinitions = [
-      {
-        title: 'Cybernetic Monsoon (VIP Mix)',
-        genre: 'Electronic',
-        language: 'Hindi',
-        mood: 'party',
-        duration: 196,
-        syntheticAudioUrl: 'synth://cyber-monsoon',
-        coverPreview: makeSvgArt('CYBER MONSOON', 'VIP MIX', '#00E0A8', '#07121E'),
-        preset: SONG_THEME_PRESETS[0],
-        themeBgPreview: makeSvgArt('THEME CANVAS', 'CYBER NEON', '#00E0A8', '#050C16'),
-        lyrics: '[00:00.00] Rain falls on the neon highway\n[00:04.00] Bassline echoing through the night\n[00:08.00] Global beats on mileymusic.space',
-      },
-      {
-        title: 'Velvet Starlight Confession',
-        genre: 'Pop',
-        language: 'English',
-        mood: 'romantic',
-        duration: 208,
-        syntheticAudioUrl: 'synth://velvet-starlight',
-        coverPreview: makeSvgArt('VELVET STAR', 'CONFESSION', '#FF3DAE', '#1A081E'),
-        preset: SONG_THEME_PRESETS[1],
-        themeBgPreview: makeSvgArt('THEME CANVAS', 'VELVET ROSE', '#FF3DAE', '#16071B'),
-        lyrics: '[00:00.00] Under the rose gold skyline\n[00:04.00] Every heartbeat in stereo\n[00:08.00] Spinning live in the Listen Room',
-      },
-      {
-        title: 'Golden Hour 808 Drift',
-        genre: 'Hip-Hop',
-        language: 'Punjabi',
-        mood: 'workout',
-        duration: 182,
-        syntheticAudioUrl: 'synth://golden-808',
-        coverPreview: makeSvgArt('GOLDEN 808', 'DRIFT', '#F59E0B', '#1C1006'),
-        preset: SONG_THEME_PRESETS[2],
-        themeBgPreview: makeSvgArt('THEME CANVAS', 'ROYAL GOLD', '#F59E0B', '#180D05'),
-        lyrics: '[00:00.00] Turn the subwoofers all the way up\n[00:04.00] Royal gold on the stage tonight\n[00:08.00] Unstoppable energy from start to finish',
-      },
-    ]
-
-    const items = sampleDefinitions.map((s, idx) => ({
-      id: `bulk-sample-${Date.now()}-${idx}`,
-      file: null,
-      syntheticAudioUrl: s.syntheticAudioUrl,
-      title: s.title,
-      artistName: myChannel?.name || user?.displayName || 'MiLey Studio Creator',
-      genre: s.genre,
-      language: s.language,
-      mood: s.mood,
-      duration: s.duration,
-      lyrics: s.lyrics,
-      coverFile: null,
-      coverPreview: s.coverPreview,
-      themePresetId: s.preset.id,
-      themeName: s.preset.name,
-      primaryColor: s.preset.primaryColor,
-      secondaryColor: s.preset.secondaryColor,
-      visualizer: s.preset.visualizer,
-      themeBgFile: null,
-      themeBgPreview: s.themeBgPreview,
-      status: 'ready',
+  const handleAudio = (e) => {
+    const f = e.target.files?.[0]; if (!f) return
+    setAudioFile(f)
+    if (!title) setTitle(f.name.replace(/\.[^.]+$/, ''))
+  }
+  const handleAlbumFiles = (files) => {
+    const arr = Array.from(files || []).map((f, idx) => ({
+      file: f,
+      title: f.name.replace(/\.[^.]+$/, ''),
+      songTheme: SONG_THEME_PRESETS[idx % SONG_THEME_PRESETS.length],
     }))
+    setAlbumTracks((prev) => [...prev, ...arr])
+  }
+  const handleBulkFiles = (files) => {
+    const arr = Array.from(files || []).map((f, idx) => ({
+      id: `bulk-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+      file: f,
+      title: f.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' '),
+      genre: genre || 'Electronic',
+      mood: mood || 'Chill',
+      language: language || 'English',
+      lyrics: '',
+      songTheme: { ...SONG_THEME_PRESETS[(bulkTracks.length + idx) % SONG_THEME_PRESETS.length] },
+      expanded: idx === 0 && bulkTracks.length === 0,
+    }))
+    setBulkTracks((prev) => [...prev, ...arr])
+  }
 
-    setBulkItems((prev) => [...prev, ...items])
+  const addDemoBulkSongs = () => {
+    const demos = [
+      { title: 'Emerald Horizon', synthUrl: 'synth://neon', genre: 'Synthwave', mood: 'Late Night', presetIdx: 0 },
+      { title: 'Velvet Starlight', synthUrl: 'synth://velvet', genre: 'Lo-Fi', mood: 'Chill', presetIdx: 1 },
+      { title: 'Solaris Pulse', synthUrl: 'synth://cyber', genre: 'Electronic', mood: 'Workout', presetIdx: 3 },
+    ].map((d, idx) => ({
+      id: `bulk-demo-${Date.now()}-${idx}`,
+      file: null,
+      synthUrl: d.synthUrl,
+      title: d.title,
+      genre: d.genre,
+      mood: d.mood,
+      language: language || 'English',
+      lyrics: '[00:02] Direct upload song theme active\n[00:07] Streaming on mileymusic.space',
+      songTheme: { ...SONG_THEME_PRESETS[d.presetIdx] },
+      expanded: idx === 0,
+    }))
+    setBulkTracks((prev) => [...prev, ...demos])
+    setCopyright(true)
   }
 
   const updateBulkItem = (id, patch) => {
-    setBulkItems((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, ...patch } : item))
-    )
+    setBulkTracks((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)))
   }
 
-  const removeBulkItem = (id) => {
-    setBulkItems((prev) => prev.filter((item) => item.id !== id))
+  const applyThemeToAllBulk = (preset) => {
+    setBulkTracks((prev) => prev.map((item) => ({ ...item, songTheme: { ...preset } })))
   }
 
-  const applyPresetToBulkItem = (id, presetId) => {
-    const preset = SONG_THEME_PRESETS.find((p) => p.id === presetId)
-    if (!preset) return
-    updateBulkItem(id, {
-      themePresetId: preset.id,
-      themeName: preset.name,
-      primaryColor: preset.primaryColor,
-      secondaryColor: preset.secondaryColor,
-      visualizer: preset.visualizer,
-    })
+  const onDrop = (e) => {
+    e.preventDefault(); setDragOver(false)
+    const files = e.dataTransfer.files
+    if (!files.length) return
+    if (type === 'album') handleAlbumFiles(files)
+    else if (type === 'bulk') handleBulkFiles(files)
+    else { setAudioFile(files[0]); if (!title) setTitle(files[0].name.replace(/\.[^.]+$/, '')) }
   }
 
-  const applyBatchDefaultsToAll = () => {
-    const preset = SONG_THEME_PRESETS.find((p) => p.id === batchPresetId) || SONG_THEME_PRESETS[0]
-    setBulkItems((prev) =>
-      prev.map((item) => ({
-        ...item,
-        genre: batchGenre,
-        language: batchLanguage,
-        mood: batchMood,
-        themePresetId: preset.id,
-        themeName: preset.name,
-        primaryColor: preset.primaryColor,
-        secondaryColor: preset.secondaryColor,
-        visualizer: preset.visualizer,
-      }))
-    )
+  const canSubmit = () => {
+    if (!copyright) return false
+    if (type === 'bulk') return bulkTracks.length > 0 && bulkTracks.every((b) => b.title.trim())
+    if (!coverFile) return false
+    if (type === 'album') return title.trim() && albumTracks.length > 0
+    return title.trim() && audioFile
   }
 
-  const handleBulkThemeBgUpload = (id, file) => {
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => {
-      updateBulkItem(id, {
-        themeBgFile: file,
-        themeBgPreview: typeof reader.result === 'string' ? reader.result : '',
-      })
-    }
-    reader.readAsDataURL(file)
-  }
-
-  const handleBulkCoverUpload = (id, file) => {
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => {
-      updateBulkItem(id, {
-        coverFile: file,
-        coverPreview: typeof reader.result === 'string' ? reader.result : '',
-      })
-    }
-    reader.readAsDataURL(file)
-  }
-
-  const handleSingleThemePresetChange = (presetId) => {
-    const preset = SONG_THEME_PRESETS.find((p) => p.id === presetId)
-    if (!preset) return
-    setSingleThemePresetId(preset.id)
-    setSingleThemeName(preset.name)
-    setSinglePrimaryColor(preset.primaryColor)
-    setSingleSecondaryColor(preset.secondaryColor)
-    setSingleVisualizer(preset.visualizer)
-  }
-
-  const handleSingleThemeBgFile = (file) => {
-    if (!file) return
-    setSingleThemeBgFile(file)
-    const reader = new FileReader()
-    reader.onload = () => {
-      if (typeof reader.result === 'string') setSingleThemeBgPreview(reader.result)
-    }
-    reader.readAsDataURL(file)
-  }
-
-  // Ensure the creator has an active channel automatically if needed
-  const ensureCreatorChannel = async () => {
-    if (myChannel && canUploadChannel(myChannel, user)) return myChannel
-    const slug = (user?.displayName || 'miley_creator')
-      .toLowerCase()
-      .replace(/[^a-z0-9_]/g, '_')
-      .slice(0, 20)
-    const created = await db.upsertShared(
-      'channels',
-      {
-        id: myChannel?.id || `ch-${user?.id || 'studio'}`,
-        ownerId: user?.id,
-        ownerName: user?.displayName || 'MiLey Studio Creator',
-        name: myChannel?.name || `${user?.displayName || 'MiLey'} Studio`,
-        username: myChannel?.username || slug || 'miley_studio',
-        bio: 'Official Creator Channel on mileymusic.space',
-        avatarUrl: user?.avatarUrl || '',
-        verified: true,
-        status: 'approved',
-      },
-      myChannel?.id || `ch-${user?.id || 'studio'}`,
-      { visibleTo: 'public' }
-    )
-    return created
-  }
-
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    setError('')
-    setDone(false)
-
+  const submit = async () => {
+    if (!canSubmit()) return
+    setSaving(true)
     try {
-      setUploading(true)
-      const activeChannel = await ensureCreatorChannel()
-
-      // ── MODE 1: BULK SONGS + DIRECT UPLOAD SONG THEMES ──
-      if (mode === 'bulk') {
-        if (bulkItems.length === 0) {
-          setUploading(false)
-          return setError(
-            'Add at least one audio file or click "Load 3 Sample Studio Tracks" to bulk upload.'
-          )
-        }
-
-        for (let i = 0; i < bulkItems.length; i++) {
-          const item = bulkItems[i]
-          updateBulkItem(item.id, { status: 'uploading' })
-          setProgressText(
-            `Bulk Uploading (${i + 1}/${bulkItems.length}): "${item.title}" + Direct Song Theme (${item.themeName})...`
-          )
-
-          let audioUrl = item.syntheticAudioUrl
-          if (item.file) {
-            const upAudio = await storage.upload('tracks', item.file)
-            audioUrl = upAudio.url
-          } else if (!audioUrl) {
-            audioUrl = `synth://${item.title.toLowerCase().replace(/[^a-z0-9]/g, '-')}`
-          }
-
-          let coverUrl = item.coverPreview
-          if (item.coverFile) {
-            const upCover = await storage.upload('covers', item.coverFile)
-            coverUrl = upCover.url
-          } else if (!coverUrl) {
-            coverUrl = makeSvgArt(
-              item.title.slice(0, 14),
-              item.artistName.slice(0, 16),
-              item.primaryColor,
-              '#090A10'
-            )
-          }
-
-          let themeBgUrl = item.themeBgPreview || ''
-          if (item.themeBgFile) {
-            const upThemeBg = await uploadSongThemeAsset(item.themeBgFile, item.id)
-            themeBgUrl = upThemeBg.url
-          }
-
-          const songTheme = {
-            presetId: item.themePresetId,
-            name: item.themeName || 'Custom Song Theme',
-            primaryColor: item.primaryColor || '#00E0A8',
-            secondaryColor: item.secondaryColor || '#FF3DAE',
-            visualizer: item.visualizer || 'bars',
-            bgImageUrl: themeBgUrl,
-          }
-
-          await db.insertShared(
-            'tracks',
-            {
-              title: item.title.trim() || `Track ${i + 1}`,
-              artistName: item.artistName.trim() || activeChannel.name,
-              artistId: user?.id,
-              channelId: activeChannel.id,
-              channelUsername: activeChannel.username,
-              channelName: activeChannel.name,
-              channelVerified: Boolean(activeChannel.verified),
-              genre: item.genre,
-              language: item.language,
-              mood: item.mood,
-              lyrics: (item.lyrics || '').trim(),
-              coverUrl,
-              audioUrl,
-              duration: item.duration || 195,
-              type: 'song',
-              plays: 1,
-              likes: 0,
-              songTheme,
-              collaborators: collaborators.map((c) => ({
-                id: c.id,
-                name: c.displayName,
-                avatar: c.avatarUrl,
-              })),
-            },
-            undefined,
-            { visibleTo: 'public' }
-          )
-
-          updateBulkItem(item.id, { status: 'done' })
-        }
-
-        notifyFollowers({
-          actorId: user?.id,
-          actorName: activeChannel.name,
-          type: 'new_track',
-          title: `${activeChannel.name} dropped ${bulkItems.length} new tracks with custom Song Themes`,
-          body: bulkItems.map((b) => b.title).slice(0, 3).join(', '),
-          link: `/channel/${activeChannel.username}`,
-        })
-
-        setDone(true)
-        setProgressText('')
-        setTimeout(() => navigate('/'), 1000)
-        return
-      }
-
-      // ── MODE 2: SINGLE SONG / PODCAST / ALBUM ──
-      if (!title.trim()) {
-        setUploading(false)
-        return setError('Please enter a title.')
-      }
-
       let coverUrl = ''
       if (coverFile) {
-        setProgressText('Uploading cover artwork...')
-        const uploadedCover = await storage.upload('covers', coverFile)
-        coverUrl = uploadedCover.url
-      } else {
-        coverUrl = makeSvgArt(
-          title.trim().slice(0, 14),
-          artistName.trim().slice(0, 16),
-          singlePrimaryColor,
-          '#090A10'
-        )
+        setProgressLabel('Uploading cover art…')
+        const r = await storage.upload(coverFile, coverFile.name)
+        coverUrl = r.url
       }
-
-      let themeBgUrl = singleThemeBgPreview || ''
-      if (singleThemeBgFile) {
-        setProgressText('Uploading direct Song Theme canvas...')
-        const upTheme = await uploadSongThemeAsset(singleThemeBgFile)
-        themeBgUrl = upTheme.url
+      let bannerUrl = ''
+      if (bannerFile) {
+        setProgressLabel('Uploading banner…')
+        const r = await storage.upload(bannerFile, bannerFile.name)
+        bannerUrl = r.url
       }
+      if (genre) await ensureCategory(genre, 'genre')
+      if (language) await ensureCategory(language, 'language')
+      if (mood) await ensureCategory(mood, 'mood')
 
-      const songTheme = {
-        presetId: singleThemePresetId,
-        name: singleThemeName,
-        primaryColor: singlePrimaryColor,
-        secondaryColor: singleSecondaryColor,
-        visualizer: singleVisualizer,
-        bgImageUrl: themeBgUrl,
-      }
+      const iso = scheduledAt ? new Date(scheduledAt).toISOString() : null
+      const visMap = { public: 'public', private: 'creator-and-admin', friends: 'creator-and-admin' }
 
-      if (mode === 'single' || mode === 'podcast') {
-        let audioUrl = ''
-        let dur = 195
-        if (audioFile) {
-          setProgressText('Uploading audio file...')
-          const uploadedAudio = await storage.upload('tracks', audioFile)
-          audioUrl = uploadedAudio.url
-          dur = (await readAudioDuration(audioFile)) || 195
-        } else {
-          audioUrl = `synth://${title.trim().toLowerCase().replace(/[^a-z0-9]/g, '-')}`
-        }
-
-        setProgressText('Publishing track & Song Theme...')
-        const collabNames = collaborators.map((c) => c.displayName).filter(Boolean)
-        const baseArtist = artistName.trim() || activeChannel.name || 'Unknown Artist'
-        const displayArtist =
-          collabNames.length > 0
-            ? `${baseArtist} feat. ${collabNames.join(', ')}`
-            : baseArtist
-
-        const created = await db.insertShared(
-          'tracks',
-          {
-            title: title.trim(),
-            artistName: displayArtist,
-            artistId: user?.id,
-            channelId: activeChannel.id,
-            channelUsername: activeChannel.username,
-            channelName: activeChannel.name,
-            channelVerified: Boolean(activeChannel.verified),
-            collaborators: collaborators.map((c) => ({
-              id: c.id,
-              name: c.displayName,
-              avatar: c.avatarUrl,
-            })),
-            genre: mode === 'podcast' ? 'Podcast' : genre,
-            language,
-            mood,
-            lyrics: lyrics.trim(),
-            coverUrl,
-            audioUrl,
-            duration: dur,
-            type: mode,
-            plays: 1,
-            likes: 0,
-            songTheme,
-          },
-          undefined,
-          { visibleTo: 'public' }
-        )
-
-        notifyFollowers({
-          actorId: user?.id,
-          actorName: activeChannel.name,
-          type: 'new_track',
-          title: `${activeChannel.name} dropped a new ${mode === 'podcast' ? 'episode' : 'track'}`,
-          body: title.trim(),
-          link: `/channel/${activeChannel.username}`,
-          meta: { trackId: created?.id, coverUrl },
-        })
-        for (const c of collaborators) {
-          notifyUser({
-            recipientId: c.id,
-            type: 'collab',
-            title: `${activeChannel.name} tagged you as a collaborator`,
-            body: title.trim(),
-            link: `/channel/${activeChannel.username}`,
-          })
-        }
-      } else if (mode === 'album') {
-        const valid = albumTracks.filter((r) => r.title.trim())
-        if (valid.length === 0) {
-          setUploading(false)
-          return setError('Add at least one track title to the album.')
-        }
-        setProgressText('Creating album...')
-        const album = await db.insertShared(
-          'albums',
-          {
-            title: title.trim(),
-            artistName: artistName.trim() || activeChannel.name,
-            artistId: user?.id,
-            channelId: activeChannel.id,
-            channelUsername: activeChannel.username,
-            genre,
-            language,
-            coverUrl,
-          },
-          undefined,
-          { visibleTo: 'public' }
-        )
-
-        for (let i = 0; i < valid.length; i++) {
-          const row = valid[i]
-          setProgressText(`Uploading track ${i + 1} of ${valid.length}: ${row.title}...`)
-          let audioUrl = `synth://${row.title.trim().toLowerCase().replace(/[^a-z0-9]/g, '-')}`
-          let dur = 195
-          if (row.file) {
-            const up = await storage.upload('tracks', row.file)
-            audioUrl = up.url
-            dur = (await readAudioDuration(row.file)) || 195
+      if (type === 'bulk') {
+        for (let i = 0; i < bulkTracks.length; i++) {
+          const b = bulkTracks[i]
+          setProgressLabel(`Uploading song ${i + 1} of ${bulkTracks.length} (${b.title})…`)
+          let audioUrl = b.synthUrl || 'synth://neon'
+          let duration = 185
+          if (b.file) {
+            const uploaded = await storage.upload(b.file, b.file.name)
+            audioUrl = uploaded.url
+            duration = (await readAudioDuration(b.file)) || 180
           }
-          await db.insertShared(
-            'tracks',
-            {
-              title: row.title.trim(),
-              artistName: artistName.trim() || activeChannel.name,
-              artistId: user?.id,
-              channelId: activeChannel.id,
-              channelUsername: activeChannel.username,
-              channelName: activeChannel.name,
-              channelVerified: Boolean(activeChannel.verified),
-              albumId: album.id,
-              albumTitle: title.trim(),
-              trackNumber: i + 1,
-              genre,
-              language,
-              mood,
-              lyrics: (row.lyrics || '').trim(),
-              coverUrl,
-              audioUrl,
-              duration: dur,
-              type: 'song',
-              plays: 1,
-              likes: 0,
-              songTheme,
-            },
-            undefined,
-            { visibleTo: 'public' }
-          )
+          if (b.genre) await ensureCategory(b.genre, 'genre')
+          if (b.language) await ensureCategory(b.language, 'language')
+          if (b.mood) await ensureCategory(b.mood, 'mood')
+          await db.insertShared('tracks', {
+            title: b.title.trim(),
+            artistName: artistName || user?.displayName || 'Unknown Artist',
+            artistId: user.id,
+            coverUrl,
+            bannerUrl,
+            audioUrl,
+            duration,
+            genre: b.genre || genre || 'Pop',
+            language: b.language || language || 'English',
+            mood: b.mood || mood || 'Chill',
+            lyrics: b.lyrics || lyrics || '',
+            songTheme: b.songTheme || SONG_THEME_PRESETS[0],
+            type: 'song',
+            albumId: null,
+            albumTitle: null,
+            visibility,
+            channelId: channel?.id || null,
+            scheduledAt: iso,
+            copyrightOwned: true,
+            plays: 0,
+            likesCount: 0,
+          }, undefined, { visibleTo: visMap[visibility] })
         }
+      } else if (type === 'album') {
+        setProgressLabel('Creating album…')
+        const album = await db.insertShared('albums', {
+          title: title.trim(), artistName: artistName || 'Unknown Artist', artistId: user.id,
+          coverUrl, bannerUrl, genre, language, visibility, channelId: channel?.id || null,
+          coArtistIds: coArtists.map((c) => c.id), coArtistNames: coArtists.map((c) => c.displayName),
+        }, undefined, { visibleTo: visMap[visibility] })
+
+        for (let i = 0; i < albumTracks.length; i++) {
+          const t = albumTracks[i]
+          setProgressLabel(`Uploading track ${i + 1} of ${albumTracks.length}…`)
+          const { url: audioUrl } = await storage.upload(t.file, t.file.name)
+          const duration = await readAudioDuration(t.file)
+          await db.insertShared('tracks', {
+            title: t.title, artistName: artistName || 'Unknown Artist', artistId: user.id,
+            coverUrl, bannerUrl, audioUrl, duration, genre, language, mood, lyrics: '',
+            songTheme: t.songTheme || singleSongTheme || SONG_THEME_PRESETS[0],
+            type: 'song', albumId: album.id, albumTitle: title.trim(), visibility, channelId: channel?.id || null,
+            coArtistIds: coArtists.map((c) => c.id),
+            scheduledAt: iso, copyrightOwned: true, plays: 0, likesCount: 0,
+          }, undefined, { visibleTo: visMap[visibility] })
+        }
+      } else {
+        setProgressLabel('Uploading audio…')
+        const { url: audioUrl } = await storage.upload(audioFile, audioFile.name)
+        const duration = await readAudioDuration(audioFile)
+        await db.insertShared('tracks', {
+          title: title.trim(), artistName: artistName || 'Unknown Artist', artistId: user.id,
+          coverUrl, bannerUrl, audioUrl, duration, genre, language, mood, lyrics,
+          songTheme: singleSongTheme || SONG_THEME_PRESETS[0],
+          type, albumId: null, albumTitle: null, visibility, channelId: channel?.id || null,
+          seasonNumber: type === 'podcast' && seasonNumber ? Number(seasonNumber) : null,
+          episodeNumber: type === 'podcast' && episodeNumber ? Number(episodeNumber) : null,
+          scheduledAt: iso, copyrightOwned: true, plays: 0, likesCount: 0,
+        }, undefined, { visibleTo: visMap[visibility] })
       }
 
       setDone(true)
-      setProgressText('')
-      setTimeout(() => navigate('/'), 900)
-    } catch (err) {
-      setError(err?.message || 'Upload failed. Please try again.')
-    } finally {
-      setUploading(false)
+    } catch (e) {
+      setProgressLabel('Upload failed — please try again.')
     }
+    setSaving(false)
+  }
+
+  if (uploadsSuspended) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center px-8 text-center">
+        <div className="w-16 h-16 rounded-3xl card-surface flex items-center justify-center mb-4"><LockIcon size={26} className="grad-brand-text" /></div>
+        <h2 className="font-display font-bold text-xl text-white mb-2">Uploads suspended</h2>
+        <p className="text-white/40 text-sm max-w-xs">An administrator has temporarily suspended uploads on your account.</p>
+      </div>
+    )
+  }
+
+  const directUpload = canUploadDirect(user)
+  const channelApproved = channel && channel.status === 'approved'
+  if (!directUpload && !channelApproved) {
+    if (!channelLoaded) return null
+    return <UploadLocked channel={channel} navigate={navigate} />
+  }
+
+  if (done) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center px-6 text-center">
+        <div className="w-16 h-16 rounded-3xl btn-brand flex items-center justify-center mb-4"><CheckIcon size={28} color="#0B0B0B" /></div>
+        <h2 className="font-display font-bold text-xl text-white mb-2">Uploaded!</h2>
+        <p className="text-white/40 text-sm mb-6 max-w-xs">
+          Your {type === 'bulk' ? `${bulkTracks.length} songs with Direct Upload Song Themes` : type === 'album' ? 'album' : type} are live{visibility !== 'public' ? ' (not public)' : ' on MiLey'}.
+        </p>
+        <div className="flex gap-3">
+          <button onClick={() => navigate('/library')} className="card-surface px-5 py-2.5 rounded-2xl text-sm font-medium text-white">View in Library</button>
+          <button onClick={reset} className="btn-brand text-black px-5 py-2.5 rounded-2xl text-sm font-semibold">Upload Another</button>
+        </div>
+      </div>
+    )
   }
 
   return (
-    <div className="px-4 pt-5 pb-12 max-w-2xl mx-auto space-y-5">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold" style={{ fontFamily: 'var(--font-display)' }}>
-            Creator Upload &amp; Song Theme Studio
-          </h1>
-          <p className="text-xs text-text-secondary">
-            Uploading to{' '}
-            <span className="text-accent-primary font-mono font-semibold">
-              @{myChannel?.username || 'miley_studio'}
-            </span>{' '}
-            on <span className="text-white/80 font-mono">mileymusic.space</span>
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => navigate('/channel-setup')}
-          className="px-3 py-1.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-[11px] font-semibold text-accent-primary flex items-center gap-1 shrink-0"
-        >
-          <Radio className="w-3 h-3" /> Channel Studio
-        </button>
+    <div className="px-4 md:px-8 pt-[calc(env(safe-area-inset-top,0px)+0.9rem)] pb-8 max-w-3xl mx-auto w-full">
+      <div className="flex items-center gap-2 mb-5">
+        <UploadIcon size={22} className="grad-brand-text" />
+        <h1 className="font-display font-bold text-xl text-white">Upload Studio</h1>
       </div>
+      {channel && <p className="text-xs text-white/40 -mt-3 mb-4">Publishing to your channel <span className="grad-brand-text font-medium">@{channel.username}</span></p>}
 
-      {/* Mode Switcher */}
-      <div className="grid grid-cols-4 gap-1.5 bg-bg-secondary p-1 rounded-2xl border border-white/5">
-        {[
-          { id: 'bulk', label: 'Bulk + Themes', icon: Layers },
-          { id: 'single', label: 'Single Song', icon: Music },
-          { id: 'album', label: 'Album', icon: Disc },
-          { id: 'podcast', label: 'Podcast', icon: Mic2 },
-        ].map(({ id, label, icon: Icon }) => (
+      <div className="flex gap-2 mb-5">
+        {TYPES.map((t) => (
           <button
-            key={id}
-            type="button"
-            onClick={() => {
-              setMode(id)
-              setError('')
-            }}
-            className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-medium transition-colors ${
-              mode === id
-                ? 'bg-accent-primary text-[#0B0B0B] font-bold shadow-md'
-                : 'text-text-secondary hover:text-white'
-            }`}
+            key={t.key}
+            onClick={() => { setType(t.key); setAudioFile(null); setAlbumTracks([]) }}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium ${type === t.key ? 'btn-brand text-black' : 'card-surface text-white/60'}`}
           >
-            <Icon className="w-3.5 h-3.5" />
-            {label}
+            {t.label}
           </button>
         ))}
       </div>
 
-      {/* ══════════════════════════════════════════════════════════════════
-          BULK SONG UPLOAD SYSTEM WITH PER-SONG DIRECT UPLOAD SONG THEMES
-         ══════════════════════════════════════════════════════════════════ */}
-      {mode === 'bulk' && (
-        <form onSubmit={handleSubmit} className="space-y-5">
-          {/* Multi-file Dropzone + Sample Studio Pack Button */}
-          <div className="p-5 rounded-3xl bg-gradient-to-br from-accent-primary/15 via-bg-secondary to-accent-secondary/15 border border-accent-primary/35 space-y-4">
-            <div className="flex items-start justify-between gap-3 flex-wrap">
-              <div className="space-y-1">
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-accent-primary/20 text-accent-primary text-[10px] font-mono uppercase tracking-wider">
-                  <Sparkles className="w-3 h-3" /> Direct Per-Song Theme Engine
-                </span>
-                <h2 className="text-lg font-bold" style={{ fontFamily: 'var(--font-display)' }}>
-                  Bulk Song Upload + Direct Upload Song Themes
-                </h2>
-                <p className="text-xs text-text-secondary max-w-lg">
-                  Select multiple audio files at once. Each song in your bulk queue gets its own
-                  direct-upload Song Theme background canvas, neon color palette, and reactive
-                  visualizer style.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={loadSampleBulkStudioPack}
-                className="px-3.5 py-2 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-semibold text-accent-primary flex items-center gap-1.5 shrink-0 transition-all"
-              >
-                <Wand2 className="w-3.5 h-3.5" /> Load 3 Sample Studio Tracks
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+        className={`rounded-2xl border-2 border-dashed ${dragOver ? 'border-[rgb(var(--color-primary))] bg-white/5' : 'border-white/10'} p-6 text-center mb-5 transition-colors`}
+      >
+        {type === 'bulk' ? (
+          <>
+            <UploadIcon size={26} className="mx-auto mb-2 text-white/40" />
+            <p className="text-sm text-white/60 mb-1">Drag & drop multiple songs for Bulk Upload</p>
+            <p className="text-xs text-white/35 mb-3">Each song gets its own Direct Upload Song Theme (colors, visualizer, lyrics glow)</p>
+            <div className="flex items-center justify-center gap-2">
+              <button onClick={() => audioInputRef.current?.click()} className="btn-brand text-black px-4 py-2 rounded-xl text-xs font-semibold">
+                Select Audio Files
+              </button>
+              <button onClick={addDemoBulkSongs} className="card-surface px-4 py-2 rounded-xl text-xs font-medium text-white flex items-center gap-1.5">
+                <SparkleIcon size={13} className="grad-brand-text" /> Load 3 Demo Songs
               </button>
             </div>
-
-            <label className="flex flex-col items-center justify-center p-6 rounded-2xl border-2 border-dashed border-accent-primary/40 bg-black/35 hover:border-accent-primary cursor-pointer transition-all text-center">
-              <UploadIcon className="w-8 h-8 text-accent-primary mb-2" />
-              <p className="text-sm font-bold text-white">
-                Click or Drop Multiple Audio Files Here (MP3, WAV, M4A, FLAC)
-              </p>
-              <p className="text-xs text-text-secondary mt-0.5">
-                Each selected song will appear below with its own Direct Song Theme Studio
-              </p>
-              <input
-                type="file"
-                accept="audio/*"
-                multiple
-                className="hidden"
-                onChange={(e) => handleBulkFilesSelect(e.target.files)}
-              />
-            </label>
-
-            {/* Batch Default Controls */}
-            {bulkItems.length > 0 && (
-              <div className="p-3.5 rounded-2xl bg-black/40 border border-white/10 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-mono uppercase tracking-wider text-white/75 flex items-center gap-1.5">
-                    <Palette className="w-3.5 h-3.5 text-accent-primary" /> Batch Defaults ({bulkItems.length} Songs Queued)
-                  </span>
-                  <button
-                    type="button"
-                    onClick={applyBatchDefaultsToAll}
-                    className="px-3 py-1 rounded-full bg-accent-primary text-[#0B0B0B] text-[11px] font-bold"
-                  >
-                    Apply Defaults to All {bulkItems.length} Songs
-                  </button>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  <select
-                    value={batchGenre}
-                    onChange={(e) => setBatchGenre(e.target.value)}
-                    className="px-2.5 py-2 rounded-xl bg-bg-secondary border border-white/10 text-xs"
-                  >
-                    {GENRES.map((g) => (
-                      <option key={g} value={g}>
-                        Genre: {g}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={batchLanguage}
-                    onChange={(e) => setBatchLanguage(e.target.value)}
-                    className="px-2.5 py-2 rounded-xl bg-bg-secondary border border-white/10 text-xs"
-                  >
-                    {LANGUAGES.map((l) => (
-                      <option key={l} value={l}>
-                        Lang: {l}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={batchMood}
-                    onChange={(e) => setBatchMood(e.target.value)}
-                    className="px-2.5 py-2 rounded-xl bg-bg-secondary border border-white/10 text-xs"
-                  >
-                    {MOODS.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        Mood: {m.label}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={batchPresetId}
-                    onChange={(e) => setBatchPresetId(e.target.value)}
-                    className="px-2.5 py-2 rounded-xl bg-bg-secondary border border-white/10 text-xs"
-                  >
-                    {SONG_THEME_PRESETS.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        Theme: {p.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+            <input ref={audioInputRef} type="file" accept={AUDIO_ACCEPT} multiple className="hidden" onChange={(e) => handleBulkFiles(e.target.files)} />
+          </>
+        ) : type !== 'album' ? (
+          <>
+            <UploadIcon size={26} className="mx-auto mb-2 text-white/40" />
+            <p className="text-sm text-white/60 mb-3">Drag & drop your audio file, or</p>
+            <button onClick={() => audioInputRef.current?.click()} className="card-surface px-4 py-2 rounded-xl text-sm font-medium text-white">Choose File</button>
+            <input ref={audioInputRef} type="file" accept={AUDIO_ACCEPT} className="hidden" onChange={handleAudio} />
+            <p className="text-xs text-white/25 mt-3">MP3, WAV, FLAC, AAC, OGG</p>
+            {audioFile && (
+              <div className="mt-4 flex items-center justify-between card-surface rounded-xl px-3 py-2 text-left">
+                <span className="text-sm text-white truncate">{audioFile.name}</span>
+                <button onClick={() => setAudioFile(null)}><TrashIcon size={16} className="text-white/40" /></button>
               </div>
             )}
-          </div>
+          </>
+        ) : (
+          <>
+            <UploadIcon size={26} className="mx-auto mb-2 text-white/40" />
+            <p className="text-sm text-white/60 mb-3">Drag & drop multiple audio files for this album, or</p>
+            <button onClick={() => audioInputRef.current?.click()} className="card-surface px-4 py-2 rounded-xl text-sm font-medium text-white">Choose Files</button>
+            <input ref={audioInputRef} type="file" accept={AUDIO_ACCEPT} multiple className="hidden" onChange={(e) => handleAlbumFiles(e.target.files)} />
+            {albumTracks.length > 0 && (
+              <div className="mt-4 space-y-2 text-left">
+                {albumTracks.map((t, i) => (
+                  <div key={i} className="flex items-center gap-2 card-surface rounded-xl px-3 py-2">
+                    <span className="text-xs text-white/30 w-5">{i + 1}</span>
+                    <input
+                      value={t.title}
+                      onChange={(e) => setAlbumTracks((prev) => prev.map((p, pi) => pi === i ? { ...p, title: e.target.value } : p))}
+                      className="flex-1 bg-transparent text-sm text-white outline-none min-w-0"
+                    />
+                    <button onClick={() => setAlbumTracks((prev) => prev.filter((_, pi) => pi !== i))}><TrashIcon size={15} className="text-white/40" /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
-          {/* Per-Song Bulk Queue Cards with Direct Upload Song Themes */}
-          {bulkItems.length > 0 && (
-            <div className="space-y-4">
-              {bulkItems.map((item, idx) => (
-                <div
-                  key={item.id}
-                  className="rounded-3xl bg-bg-secondary border overflow-hidden transition-all shadow-xl"
-                  style={{
-                    borderColor: `${item.primaryColor}55`,
-                  }}
+      {/* Bulk Songs Queue + Per-Song Direct Upload Song Themes */}
+      {type === 'bulk' && bulkTracks.length > 0 && (
+        <div className="mb-5 space-y-3">
+          <div className="card-surface rounded-2xl p-3.5">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-white flex items-center gap-1.5">
+                <ThemeIcon size={14} className="grad-brand-text" /> Apply Song Theme to All ({bulkTracks.length} songs)
+              </span>
+            </div>
+            <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+              {SONG_THEME_PRESETS.map((preset) => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  onClick={() => applyThemeToAllBulk(preset)}
+                  className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full card-surface text-xs text-white/80 hover:text-white"
                 >
-                  {/* Top Live Song Theme Stage Header Preview */}
-                  <div
-                    className="relative p-4 flex items-center justify-between gap-3 overflow-hidden"
-                    style={{
-                      background: `radial-gradient(circle at 20% 20%, ${item.primaryColor}55, ${item.secondaryColor}30 55%, #090910 100%)`,
-                    }}
-                  >
-                    {item.themeBgPreview && (
-                      <div
-                        className="absolute inset-0 opacity-35 bg-cover bg-center pointer-events-none"
-                        style={{ backgroundImage: `url(${item.themeBgPreview})` }}
-                      />
-                    )}
-                    <div className="relative z-10 flex items-center gap-3 min-w-0">
-                      <div
-                        className="w-12 h-12 rounded-2xl overflow-hidden border-2 shrink-0 flex items-center justify-center font-bold text-black relative"
-                        style={{
-                          borderColor: item.primaryColor,
-                          background: item.coverPreview
-                            ? `url(${item.coverPreview}) center/cover`
-                            : `linear-gradient(135deg, ${item.primaryColor}, ${item.secondaryColor})`,
-                        }}
-                      >
-                        {!item.coverPreview && `#${idx + 1}`}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span
-                            className="px-2 py-0.5 rounded-full text-[10px] font-mono uppercase tracking-wider bg-black/60 border border-white/15"
-                            style={{ color: item.primaryColor }}
-                          >
-                            ✦ Song Theme: {item.themeName}
-                          </span>
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-black/50 text-white/75">
-                            {item.visualizer.toUpperCase()} VISUALIZER
-                          </span>
-                          {item.status === 'done' && (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-black">
-                              Published ✓
-                            </span>
-                          )}
-                          {item.status === 'uploading' && (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-400 text-black animate-pulse">
-                              Uploading...
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-sm font-bold text-white truncate mt-1">
-                          {item.title || `Track #${idx + 1}`}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Mini Live Theme Spectrum Preview + Delete */}
-                    <div className="relative z-10 flex items-center gap-3 shrink-0">
-                      <div className="hidden sm:flex items-end gap-1 h-6 px-2 py-1 rounded-xl bg-black/45 border border-white/10">
-                        {[50, 90, 65, 100, 75, 95].map((h, bIdx) => (
-                          <span
-                            key={bIdx}
-                            className="w-1 rounded-full animate-pulse"
-                            style={{
-                              height: `${h}%`,
-                              backgroundColor:
-                                bIdx % 2 === 0 ? item.primaryColor : item.secondaryColor,
-                              animationDelay: `${bIdx * 90}ms`,
-                            }}
-                          />
-                        ))}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => removeBulkItem(item.id)}
-                        className="p-2 rounded-full bg-black/50 text-white/70 hover:text-red-400 border border-white/10"
-                        title="Remove from bulk queue"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Body: Track Metadata + Direct Upload Song Theme Controls */}
-                  <div className="p-4 space-y-4">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-[11px] text-text-secondary block mb-1">
-                          Song Title *
-                        </label>
-                        <input
-                          value={item.title}
-                          onChange={(e) => updateBulkItem(item.id, { title: e.target.value })}
-                          placeholder="Track title"
-                          className="w-full px-3 py-2 rounded-xl bg-bg-primary border border-white/10 text-xs focus:outline-none focus:border-accent-primary"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[11px] text-text-secondary block mb-1">
-                          Artist / Creator Name
-                        </label>
-                        <input
-                          value={item.artistName}
-                          onChange={(e) =>
-                            updateBulkItem(item.id, { artistName: e.target.value })
-                          }
-                          placeholder="Artist name"
-                          className="w-full px-3 py-2 rounded-xl bg-bg-primary border border-white/10 text-xs focus:outline-none focus:border-accent-primary"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-2">
-                      <select
-                        value={item.genre}
-                        onChange={(e) => updateBulkItem(item.id, { genre: e.target.value })}
-                        className="px-2.5 py-2 rounded-xl bg-bg-primary border border-white/10 text-xs"
-                      >
-                        {GENRES.map((g) => (
-                          <option key={g} value={g}>
-                            {g}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={item.language}
-                        onChange={(e) => updateBulkItem(item.id, { language: e.target.value })}
-                        className="px-2.5 py-2 rounded-xl bg-bg-primary border border-white/10 text-xs"
-                      >
-                        {LANGUAGES.map((l) => (
-                          <option key={l} value={l}>
-                            {l}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={item.mood}
-                        onChange={(e) => updateBulkItem(item.id, { mood: e.target.value })}
-                        className="px-2.5 py-2 rounded-xl bg-bg-primary border border-white/10 text-xs"
-                      >
-                        {MOODS.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {/* DIRECT UPLOAD SONG THEME STUDIO FOR THIS TRACK */}
-                    <div className="p-3.5 rounded-2xl bg-black/35 border border-white/10 space-y-3">
-                      <div className="flex items-center justify-between flex-wrap gap-2">
-                        <span className="text-xs font-bold flex items-center gap-1.5 text-white">
-                          <Sparkles
-                            className="w-3.5 h-3.5"
-                            style={{ color: item.primaryColor }}
-                          />
-                          Direct Upload Song Theme Studio (Song #{idx + 1})
-                        </span>
-                        <span className="text-[10px] font-mono text-text-secondary">
-                          Syncs with Full Player, Listen Room &amp; Android Camera Top Bar
-                        </span>
-                      </div>
-
-                      {/* Preset Selector Pills */}
-                      <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-                        {SONG_THEME_PRESETS.map((preset) => {
-                          const active = item.themePresetId === preset.id
-                          return (
-                            <button
-                              key={preset.id}
-                              type="button"
-                              onClick={() => applyPresetToBulkItem(item.id, preset.id)}
-                              className={`px-2.5 py-1.5 rounded-xl text-[11px] font-semibold shrink-0 flex items-center gap-1.5 border transition-all ${
-                                active
-                                  ? 'bg-white/15 border-white text-white shadow'
-                                  : 'bg-white/5 border-white/10 text-text-secondary hover:text-white'
-                              }`}
-                            >
-                              <span
-                                className="w-2.5 h-2.5 rounded-full"
-                                style={{
-                                  background: `linear-gradient(135deg, ${preset.primaryColor}, ${preset.secondaryColor})`,
-                                }}
-                              />
-                              {preset.name}
-                            </button>
-                          )
-                        })}
-                      </div>
-
-                      {/* Custom Colors + Visualizer Style + Direct Theme Image Upload */}
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 items-center">
-                        <div className="flex items-center gap-2 p-2 rounded-xl bg-bg-secondary border border-white/10">
-                          <input
-                            type="color"
-                            value={item.primaryColor}
-                            onChange={(e) =>
-                              updateBulkItem(item.id, { primaryColor: e.target.value })
-                            }
-                            className="w-6 h-6 rounded cursor-pointer bg-transparent border-0"
-                          />
-                          <div className="min-w-0">
-                            <p className="text-[10px] text-text-secondary">Primary Glow</p>
-                            <p className="text-[11px] font-mono uppercase">{item.primaryColor}</p>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 p-2 rounded-xl bg-bg-secondary border border-white/10">
-                          <input
-                            type="color"
-                            value={item.secondaryColor}
-                            onChange={(e) =>
-                              updateBulkItem(item.id, { secondaryColor: e.target.value })
-                            }
-                            className="w-6 h-6 rounded cursor-pointer bg-transparent border-0"
-                          />
-                          <div className="min-w-0">
-                            <p className="text-[10px] text-text-secondary">Secondary Glow</p>
-                            <p className="text-[11px] font-mono uppercase">
-                              {item.secondaryColor}
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="p-2 rounded-xl bg-bg-secondary border border-white/10">
-                          <p className="text-[10px] text-text-secondary mb-0.5">
-                            Visualizer Mode
-                          </p>
-                          <select
-                            value={item.visualizer}
-                            onChange={(e) =>
-                              updateBulkItem(item.id, { visualizer: e.target.value })
-                            }
-                            className="w-full bg-transparent text-[11px] font-semibold focus:outline-none"
-                          >
-                            {VISUALIZER_STYLES.map((v) => (
-                              <option key={v.id} value={v.id} className="bg-bg-secondary">
-                                {v.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        {/* Direct Upload Song Theme Visual File */}
-                        <label className="flex items-center justify-center gap-1.5 p-2.5 rounded-xl border border-dashed border-accent-primary/50 bg-accent-primary/10 hover:bg-accent-primary/15 cursor-pointer text-center">
-                          <ImageIcon className="w-3.5 h-3.5 text-accent-primary shrink-0" />
-                          <span className="text-[10px] font-bold text-accent-primary truncate">
-                            {item.themeBgFile
-                              ? item.themeBgFile.name
-                              : 'Direct Upload Theme BG'}
-                          </span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            onChange={(e) =>
-                              handleBulkThemeBgUpload(item.id, e.target.files?.[0])
-                            }
-                          />
-                        </label>
-                      </div>
-
-                      {/* Per-Song Cover Art + Lyrics Row */}
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
-                        <label className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-bg-secondary border border-white/10 hover:border-white/25 cursor-pointer text-xs">
-                          <ImageIcon className="w-3.5 h-3.5 text-accent-secondary shrink-0" />
-                          <span className="truncate">
-                            {item.coverFile ? item.coverFile.name : 'Upload Track Cover Art'}
-                          </span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            onChange={(e) =>
-                              handleBulkCoverUpload(item.id, e.target.files?.[0])
-                            }
-                          />
-                        </label>
-                        <input
-                          value={item.lyrics}
-                          onChange={(e) => updateBulkItem(item.id, { lyrics: e.target.value })}
-                          placeholder="Optional lyrics or [00:12.00] synced LRC lines..."
-                          className="sm:col-span-2 px-3 py-2 rounded-xl bg-bg-secondary border border-white/10 text-xs focus:outline-none focus:border-accent-primary"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: `linear-gradient(135deg, ${preset.primaryColor}, ${preset.secondaryColor})` }} />
+                  {preset.name}
+                </button>
               ))}
             </div>
-          )}
-
-          {error && (
-            <div className="flex items-center gap-2 p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-red-300 text-xs">
-              <AlertCircle className="w-4 h-4 shrink-0" /> {error}
-            </div>
-          )}
-
-          {done && (
-            <div className="flex items-center gap-2 p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs">
-              <CheckCircle2 className="w-4 h-4 shrink-0" /> All {bulkItems.length} tracks &amp; Direct Song Themes published! Redirecting...
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={uploading}
-            className="w-full py-3.5 rounded-full bg-gradient-to-r from-accent-primary to-accent-secondary text-[#0B0B0B] font-bold text-sm shadow-lg shadow-accent-primary/25 disabled:opacity-50"
-          >
-            {uploading
-              ? progressText || 'Publishing Bulk Songs & Themes...'
-              : `Publish ${bulkItems.length || ''} Bulk Songs + Direct Song Themes`}
-          </button>
-        </form>
-      )}
-
-      {/* ══════════════════════════════════════════════════════════════════
-          SINGLE SONG / ALBUM / PODCAST FORM (WITH DIRECT SONG THEME STUDIO)
-         ══════════════════════════════════════════════════════════════════ */}
-      {mode !== 'bulk' && (
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-text-secondary block mb-1">
-                {mode === 'album'
-                  ? 'Album Title *'
-                  : mode === 'podcast'
-                  ? 'Episode Title *'
-                  : 'Track Title *'}
-              </label>
-              <input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g., Midnight Rain"
-                className="w-full px-3.5 py-2.5 rounded-xl bg-bg-secondary border border-white/10 text-sm focus:outline-none focus:border-accent-primary"
-              />
-            </div>
-            <div>
-              <label className="text-xs text-text-secondary block mb-1">Artist / Host Name</label>
-              <input
-                value={artistName}
-                onChange={(e) => setArtistName(e.target.value)}
-                placeholder="Your artist name"
-                className="w-full px-3.5 py-2.5 rounded-xl bg-bg-secondary border border-white/10 text-sm focus:outline-none focus:border-accent-primary"
-              />
-            </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2.5">
-            {mode !== 'podcast' && (
-              <div>
-                <label className="text-xs text-text-secondary block mb-1">Genre</label>
-                <select
-                  value={genre}
-                  onChange={(e) => setGenre(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl bg-bg-secondary border border-white/10 text-xs focus:outline-none focus:border-accent-primary"
+          {bulkTracks.map((b, idx) => (
+            <div key={b.id} className="card-surface rounded-2xl p-4 space-y-3">
+              <div className="flex items-center gap-2.5">
+                <span
+                  className="w-7 h-7 rounded-xl flex items-center justify-center text-xs font-bold text-black shrink-0"
+                  style={{ background: `linear-gradient(135deg, ${b.songTheme.primaryColor}, ${b.songTheme.secondaryColor})` }}
                 >
-                  {GENRES.filter((g) => g !== 'Podcast').map((g) => (
-                    <option key={g} value={g}>
-                      {g}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-            <div>
-              <label className="text-xs text-text-secondary block mb-1">Language</label>
-              <select
-                value={language}
-                onChange={(e) => setLanguage(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-xl bg-bg-secondary border border-white/10 text-xs focus:outline-none focus:border-accent-primary"
-              >
-                {LANGUAGES.map((l) => (
-                  <option key={l} value={l}>
-                    {l}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-text-secondary block mb-1">Mood</label>
-              <select
-                value={mood}
-                onChange={(e) => setMood(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-xl bg-bg-secondary border border-white/10 text-xs focus:outline-none focus:border-accent-primary"
-              >
-                {MOODS.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* Direct Song Theme Studio for Single/Album/Podcast */}
-          <div className="p-4 rounded-2xl bg-bg-secondary border border-white/10 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-accent-primary" /> Direct Upload Song Theme
-              </span>
-              <span className="text-[10px] font-mono text-accent-primary">{singleThemeName}</span>
-            </div>
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-              {SONG_THEME_PRESETS.map((p) => (
+                  {idx + 1}
+                </span>
+                <input
+                  value={b.title}
+                  onChange={(e) => updateBulkItem(b.id, { title: e.target.value })}
+                  placeholder="Song title"
+                  className="flex-1 bg-white/5 rounded-xl px-3 py-2 text-sm text-white outline-none min-w-0"
+                />
                 <button
-                  key={p.id}
                   type="button"
-                  onClick={() => handleSingleThemePresetChange(p.id)}
-                  className={`px-2.5 py-1.5 rounded-xl text-[11px] font-semibold shrink-0 flex items-center gap-1.5 border ${
-                    singleThemePresetId === p.id
-                      ? 'bg-white/15 border-white text-white'
-                      : 'bg-white/5 border-white/10 text-text-secondary'
+                  onClick={() => updateBulkItem(b.id, { expanded: !b.expanded })}
+                  className={`px-3 py-2 rounded-xl text-xs font-medium flex items-center gap-1.5 shrink-0 ${
+                    b.expanded ? 'btn-brand text-black' : 'bg-white/5 text-white/70'
                   }`}
                 >
-                  <span
-                    className="w-2.5 h-2.5 rounded-full"
-                    style={{
-                      background: `linear-gradient(135deg, ${p.primaryColor}, ${p.secondaryColor})`,
-                    }}
-                  />
-                  {p.name}
+                  <ThemeIcon size={13} />
+                  {b.songTheme.name}
                 </button>
-              ))}
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <div className="flex items-center gap-2 p-2 rounded-xl bg-bg-primary border border-white/10">
-                <input
-                  type="color"
-                  value={singlePrimaryColor}
-                  onChange={(e) => setSinglePrimaryColor(e.target.value)}
-                  className="w-6 h-6 rounded cursor-pointer bg-transparent"
-                />
-                <span className="text-[11px] font-mono">{singlePrimaryColor}</span>
-              </div>
-              <div className="flex items-center gap-2 p-2 rounded-xl bg-bg-primary border border-white/10">
-                <input
-                  type="color"
-                  value={singleSecondaryColor}
-                  onChange={(e) => setSingleSecondaryColor(e.target.value)}
-                  className="w-6 h-6 rounded cursor-pointer bg-transparent"
-                />
-                <span className="text-[11px] font-mono">{singleSecondaryColor}</span>
-              </div>
-              <label className="flex items-center justify-center gap-1.5 p-2 rounded-xl border border-dashed border-accent-primary/40 bg-accent-primary/10 cursor-pointer text-[11px] font-semibold text-accent-primary">
-                <ImageIcon className="w-3.5 h-3.5" />
-                <span className="truncate">
-                  {singleThemeBgFile ? singleThemeBgFile.name : 'Theme Canvas BG'}
-                </span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => handleSingleThemeBgFile(e.target.files?.[0])}
-                />
-              </label>
-            </div>
-          </div>
-
-          {/* Cover & Audio Picker */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="flex flex-col items-center justify-center p-4 rounded-2xl bg-bg-secondary border border-dashed border-white/15 cursor-pointer hover:border-accent-primary/50 text-center">
-              <ImageIcon className="w-6 h-6 text-accent-primary mb-1.5" />
-              <span className="text-xs font-medium truncate max-w-full">
-                {coverFile ? coverFile.name : 'Choose Cover Artwork'}
-              </span>
-              <span className="text-[10px] text-text-secondary">
-                JPG / PNG (Auto-generated if omitted)
-              </span>
-              <input
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(e) => setCoverFile(e.target.files?.[0] || null)}
-              />
-            </label>
-
-            {mode !== 'album' && (
-              <label className="flex flex-col items-center justify-center p-4 rounded-2xl bg-bg-secondary border border-dashed border-white/15 cursor-pointer hover:border-accent-primary/50 text-center">
-                <UploadIcon className="w-6 h-6 text-accent-secondary mb-1.5" />
-                <span className="text-xs font-medium truncate max-w-full">
-                  {audioFile ? audioFile.name : 'Choose Audio File'}
-                </span>
-                <span className="text-[10px] text-text-secondary">
-                  MP3, WAV, M4A (Studio synth fallback if omitted)
-                </span>
-                <input
-                  type="file"
-                  accept="audio/*"
-                  className="hidden"
-                  onChange={(e) => setAudioFile(e.target.files?.[0] || null)}
-                />
-              </label>
-            )}
-          </div>
-
-          {/* Collaborators */}
-          {mode !== 'album' && (
-            <div className="p-3.5 rounded-2xl bg-bg-secondary border border-white/10 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold flex items-center gap-1.5">
-                  <UserPlus className="w-3.5 h-3.5 text-accent-primary" /> Collaborators (feat.)
-                </label>
-                <span className="text-[10px] text-text-secondary">Optional</span>
-              </div>
-              {collaborators.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {collaborators.map((c) => (
-                    <span
-                      key={c.id}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-accent-primary/15 border border-accent-primary/30 text-accent-primary text-xs font-medium"
-                    >
-                      {c.displayName}
-                      <button type="button" onClick={() => removeCollab(c.id)}>
-                        <X className="w-3 h-3" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              <input
-                value={collabQuery}
-                onChange={(e) => searchCollabs(e.target.value)}
-                placeholder="Search artists to credit as featured..."
-                className="w-full px-3 py-2 rounded-xl bg-bg-primary border border-white/10 text-xs focus:outline-none focus:border-accent-primary"
-              />
-              {collabResults.length > 0 && (
-                <div className="max-h-36 overflow-y-auto space-y-1 pt-1">
-                  {collabResults.slice(0, 5).map((u) => (
-                    <button
-                      key={u.id}
-                      type="button"
-                      onClick={() => addCollab(u)}
-                      className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-xs text-left"
-                    >
-                      <span className="truncate">{u.displayName || 'Artist'}</span>
-                      <span className="text-[10px] text-accent-primary">+ Add</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {mode !== 'album' ? (
-            <div>
-              <label className="text-xs text-text-secondary block mb-1">
-                Lyrics / Show Notes (supports LRC timestamps like{' '}
-                <code className="text-accent-primary">[00:12.50] line</code>)
-              </label>
-              <textarea
-                value={lyrics}
-                onChange={(e) => setLyrics(e.target.value)}
-                rows={4}
-                placeholder={'[00:05.00] First line of the song\n[00:10.50] Second line...'}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-bg-secondary border border-white/10 text-xs font-mono focus:outline-none focus:border-accent-primary"
-              />
-            </div>
-          ) : (
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold">Album Tracks</label>
                 <button
                   type="button"
-                  onClick={addAlbumRow}
-                  className="flex items-center gap-1 text-xs text-accent-primary font-medium"
+                  onClick={() => setBulkTracks((prev) => prev.filter((x) => x.id !== b.id))}
+                  className="p-2 text-white/40 hover:text-white"
                 >
-                  <Plus className="w-3.5 h-3.5" /> Add Track
+                  <TrashIcon size={15} />
                 </button>
               </div>
-              {albumTracks.map((row, idx) => (
-                <div
-                  key={idx}
-                  className="p-3 rounded-2xl bg-bg-secondary border border-white/5 space-y-2"
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono text-text-secondary w-5">
-                      {idx + 1}.
-                    </span>
-                    <input
-                      value={row.title}
-                      onChange={(e) => updateAlbumRow(idx, { title: e.target.value })}
-                      placeholder="Track title"
-                      className="flex-1 bg-bg-primary px-3 py-1.5 rounded-lg text-xs border border-white/10 focus:outline-none"
-                    />
-                    <label className="px-3 py-1.5 rounded-lg bg-white/5 text-xs cursor-pointer truncate max-w-[140px]">
-                      {row.file ? row.file.name : 'Audio file'}
-                      <input
-                        type="file"
-                        accept="audio/*"
-                        className="hidden"
-                        onChange={(e) =>
-                          updateAlbumRow(idx, { file: e.target.files?.[0] || null })
-                        }
-                      />
-                    </label>
-                    {albumTracks.length > 1 && (
+
+              <div className="grid grid-cols-3 gap-2">
+                <input
+                  value={b.language}
+                  onChange={(e) => updateBulkItem(b.id, { language: e.target.value })}
+                  list="lang-list"
+                  placeholder="Language"
+                  className="bg-white/5 rounded-xl px-3 py-2 text-xs text-white placeholder-white/30 outline-none"
+                />
+                <input
+                  value={b.genre}
+                  onChange={(e) => updateBulkItem(b.id, { genre: e.target.value })}
+                  list="genre-list"
+                  placeholder="Genre"
+                  className="bg-white/5 rounded-xl px-3 py-2 text-xs text-white placeholder-white/30 outline-none"
+                />
+                <input
+                  value={b.mood}
+                  onChange={(e) => updateBulkItem(b.id, { mood: e.target.value })}
+                  list="mood-list"
+                  placeholder="Mood"
+                  className="bg-white/5 rounded-xl px-3 py-2 text-xs text-white placeholder-white/30 outline-none"
+                />
+              </div>
+
+              {b.expanded && (
+                <div className="pt-2 border-t border-white/10 space-y-3">
+                  <p className="text-xs text-white/50 flex items-center gap-1.5">
+                    <ThemeIcon size={13} className="grad-brand-text" /> Direct Upload Song Theme for “{b.title}”
+                  </p>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {SONG_THEME_PRESETS.map((preset) => {
+                      const active = (b.songTheme?.key || b.songTheme?.id) === preset.key
+                      return (
+                        <button
+                          key={preset.key}
+                          type="button"
+                          onClick={() => updateBulkItem(b.id, { songTheme: { ...preset } })}
+                          className={`flex items-center gap-2 p-2.5 rounded-xl text-left border transition-all ${
+                            active ? 'border-white bg-white/10 text-white' : 'border-white/10 bg-white/5 text-white/60'
+                          }`}
+                        >
+                          <span className="w-4 h-4 rounded-full shrink-0" style={{ background: `linear-gradient(135deg, ${preset.primaryColor}, ${preset.secondaryColor})` }} />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-medium truncate">{preset.name}</p>
+                            <p className="text-[10px] text-white/40 capitalize">{preset.visualizerStyle}</p>
+                          </div>
+                          {active && <CheckIcon size={12} />}
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] text-white/40">Visualizer:</span>
+                    {VISUALIZER_STYLES.map((v) => (
                       <button
+                        key={v.id}
                         type="button"
-                        onClick={() => removeAlbumRow(idx)}
-                        className="p-1.5 text-text-secondary hover:text-red-400"
+                        onClick={() => updateBulkItem(b.id, { songTheme: { ...b.songTheme, visualizerStyle: v.id } })}
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-medium ${
+                          b.songTheme?.visualizerStyle === v.id ? 'btn-brand text-black' : 'bg-white/5 text-white/50'
+                        }`}
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        {v.label}
                       </button>
-                    )}
+                    ))}
                   </div>
                 </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex gap-4 mb-5">
+        <label className="flex-1 flex flex-col items-center justify-center aspect-square rounded-2xl card-surface overflow-hidden cursor-pointer">
+          {coverPreview ? <img src={coverPreview} className="w-full h-full object-cover" /> : (<><CoverIcon size={22} className="text-white/30 mb-1" /><span className="text-xs text-white/40">{type === 'bulk' ? 'Shared Cover (opt)' : 'Cover Art*'}</span></>)}
+          <input type="file" accept="image/*" className="hidden" onChange={handleCover} />
+        </label>
+        <label className="flex-[2] flex flex-col items-center justify-center aspect-[2/1] rounded-2xl card-surface overflow-hidden cursor-pointer">
+          {bannerPreview ? <img src={bannerPreview} className="w-full h-full object-cover" /> : (<><BannerIcon size={22} className="text-white/30 mb-1" /><span className="text-xs text-white/40">Banner (optional)</span></>)}
+          <input type="file" accept="image/*" className="hidden" onChange={handleBanner} />
+        </label>
+      </div>
+
+      {type !== 'bulk' && (
+        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={type === 'album' ? 'Album title' : 'Track title'} className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 mb-3 outline-none" />
+      )}
+      <input value={artistName} onChange={(e) => setArtistName(e.target.value)} placeholder="Artist name" className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 mb-3 outline-none" />
+
+      <div className="grid grid-cols-3 gap-3 mb-3">
+        <input value={language} onChange={(e) => setLanguage(e.target.value)} list="lang-list" placeholder="Language" className="bg-white/5 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none" />
+        <input value={genre} onChange={(e) => setGenre(e.target.value)} list="genre-list" placeholder="Genre" className="bg-white/5 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none" />
+        <input value={mood} onChange={(e) => setMood(e.target.value)} list="mood-list" placeholder="Mood" className="bg-white/5 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none" />
+        <datalist id="lang-list">{LANGUAGE_SUGGESTIONS.map((l) => <option key={l} value={l} />)}</datalist>
+        <datalist id="genre-list">{GENRE_SUGGESTIONS.map((g) => <option key={g} value={g} />)}</datalist>
+        <datalist id="mood-list">{MOOD_SUGGESTIONS.map((m) => <option key={m} value={m} />)}</datalist>
+      </div>
+
+      {/* Direct Upload Song Theme Picker for Single Song / Podcast / Album */}
+      {type !== 'bulk' && (
+        <div className="card-surface rounded-2xl p-4 mb-3">
+          <p className="text-xs text-white/50 mb-2.5 flex items-center gap-1.5">
+            <ThemeIcon size={14} className="grad-brand-text" /> Direct Upload Song Theme
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-2.5">
+            {SONG_THEME_PRESETS.map((preset) => {
+              const active = (singleSongTheme?.key || singleSongTheme?.id) === preset.key
+              return (
+                <button
+                  key={preset.key}
+                  type="button"
+                  onClick={() => setSingleSongTheme({ ...preset })}
+                  className={`flex items-center gap-2 p-2.5 rounded-xl text-left border transition-all ${
+                    active ? 'border-white bg-white/10 text-white' : 'border-white/10 bg-white/5 text-white/60'
+                  }`}
+                >
+                  <span className="w-4 h-4 rounded-full shrink-0" style={{ background: `linear-gradient(135deg, ${preset.primaryColor}, ${preset.secondaryColor})` }} />
+                  <span className="text-xs font-medium truncate flex-1">{preset.name}</span>
+                  {active && <CheckIcon size={12} />}
+                </button>
+              )
+            })}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {VISUALIZER_STYLES.map((v) => (
+              <button
+                key={v.id}
+                type="button"
+                onClick={() => setSingleSongTheme((prev) => ({ ...prev, visualizerStyle: v.id }))}
+                className={`px-2.5 py-1 rounded-full text-[11px] font-medium ${
+                  singleSongTheme?.visualizerStyle === v.id ? 'btn-brand text-black' : 'bg-white/5 text-white/50'
+                }`}
+              >
+                {v.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {type !== 'album' && type !== 'bulk' && (
+        <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value)} placeholder="Lyrics (optional — timed lines like [00:12] your line enable synced highlighting)" rows={4} className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 mb-3 outline-none resize-none" />
+      )}
+
+      {type === 'podcast' && (
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <input value={seasonNumber} onChange={(e) => setSeasonNumber(e.target.value)} type="number" placeholder="Season number" className="bg-white/5 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none" />
+          <input value={episodeNumber} onChange={(e) => setEpisodeNumber(e.target.value)} type="number" placeholder="Episode number" className="bg-white/5 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none" />
+        </div>
+      )}
+
+      {type === 'album' && (
+        <div className="mb-3">
+          <p className="text-xs text-white/40 mb-2 flex items-center gap-1"><CollabIcon size={13} /> Collaborating artists (optional)</p>
+          <input value={coArtistQuery} onChange={(e) => setCoArtistQuery(e.target.value)} placeholder="Search users to add as co-artists…" className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 outline-none" />
+          {coArtistResults.length > 0 && (
+            <div className="card-surface rounded-xl mt-1 max-h-32 overflow-y-auto no-scrollbar">
+              {coArtistResults.map((u) => (
+                <button key={u.id} onClick={() => { setCoArtists((c) => c.find((x) => x.id === u.id) ? c : [...c, u]); setCoArtistQuery('') }} className="w-full text-left px-3 py-2 text-sm text-white hover:bg-white/5">{u.displayName}</button>
               ))}
             </div>
           )}
-
-          {error && (
-            <div className="flex items-center gap-2 p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-red-300 text-xs">
-              <AlertCircle className="w-4 h-4 shrink-0" /> {error}
+          {coArtists.length > 0 && (
+            <div className="flex gap-2 flex-wrap mt-2">
+              {coArtists.map((c) => <span key={c.id} onClick={() => setCoArtists((arr) => arr.filter((x) => x.id !== c.id))} className="text-xs px-3 py-1.5 rounded-full card-surface text-white cursor-pointer">{c.displayName} ✕</span>)}
             </div>
           )}
-
-          {done && (
-            <div className="flex items-center gap-2 p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs">
-              <CheckCircle2 className="w-4 h-4 shrink-0" /> Published! Redirecting to home...
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={uploading}
-            className="w-full py-3.5 rounded-full bg-gradient-to-r from-accent-primary to-accent-secondary text-[#0B0B0B] font-bold text-sm disabled:opacity-50"
-          >
-            {uploading ? progressText || 'Uploading...' : `Publish ${mode}`}
-          </button>
-        </form>
+        </div>
       )}
+
+      <p className="text-xs text-white/40 mb-2">Visibility</p>
+      <div className="flex gap-2 mb-4">
+        {[{ k: 'public', l: 'Public', Icon: GlobeIcon }, { k: 'friends', l: 'Friends Only', Icon: UsersIcon }, { k: 'private', l: 'Private', Icon: LockIcon }].map(({ k, l, Icon }) => (
+          <button key={k} onClick={() => setVisibility(k)} className={`flex-1 flex flex-col items-center gap-1 py-2.5 rounded-xl text-xs font-medium ${visibility === k ? 'btn-brand text-black' : 'bg-white/5 text-white/50'}`}>
+            <Icon size={16} /> {l}
+          </button>
+        ))}
+      </div>
+
+      <div className="mb-4">
+        <p className="text-xs text-white/40 mb-2">Scheduled publishing (optional)</p>
+        <input type="datetime-local" value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} className="w-full bg-white/5 rounded-xl px-4 py-2.5 text-sm text-white outline-none [color-scheme:dark]" />
+      </div>
+
+      <label className="flex items-start gap-3 mb-5 cursor-pointer">
+        <div onClick={() => setCopyright((c) => !c)} className={`w-5 h-5 mt-0.5 rounded-md flex items-center justify-center shrink-0 ${copyright ? 'btn-brand' : 'bg-white/10'}`}>
+          {copyright && <CheckIcon size={13} color="#0B0B0B" />}
+        </div>
+        <span className="text-xs text-white/50">I confirm I own the rights to this content or have permission to upload and distribute it on MiLey.</span>
+      </label>
+
+      {progressLabel && <p className="text-xs text-white/40 mb-3">{progressLabel}</p>}
+
+      <button onClick={submit} disabled={!canSubmit() || saving} className="w-full btn-brand text-black font-semibold py-3.5 rounded-2xl text-sm disabled:opacity-40">
+        {saving ? 'Uploading…' : `Publish ${type === 'bulk' ? `${bulkTracks.length} Songs` : type === 'album' ? 'Album' : type === 'podcast' ? 'Podcast' : 'Track'}`}
+      </button>
+    </div>
+  )
+}
+
+function UploadLocked({ channel, navigate }) {
+  const status = channel?.status
+  let title = 'Create a Channel to upload'
+  let subtitle = 'Uploading music on MiLey is done through a Channel. Create your channel and submit it for approval — once an admin approves it, you can upload songs, albums and podcasts from your dashboard.'
+  let cta = 'Create Your Channel'
+  if (status === 'pending') {
+    title = 'Channel awaiting approval'
+    subtitle = 'Your channel request has been submitted and is pending admin review. As soon as it\u2019s approved you\u2019ll be able to upload here.'
+    cta = 'View Channel Status'
+  } else if (status === 'rejected') {
+    title = 'Channel request declined'
+    subtitle = 'Your channel wasn\u2019t approved this time. You can update its details and request approval again from your dashboard.'
+    cta = 'Review & Resubmit'
+  }
+  return (
+    <div className="h-full flex flex-col items-center justify-center px-8 text-center">
+      <div className="w-16 h-16 rounded-3xl card-surface flex items-center justify-center mb-4">
+        {status === 'pending' ? <ChannelIcon size={26} className="grad-brand-text" /> : <LockIcon size={26} className="grad-brand-text" />}
+      </div>
+      <h2 className="font-display font-bold text-xl text-white mb-2">{title}</h2>
+      <p className="text-white/40 text-sm mb-6 max-w-xs">{subtitle}</p>
+      <button onClick={() => navigate('/channel-dashboard')} className="btn-brand text-black font-semibold px-6 py-3 rounded-2xl text-sm">{cta}</button>
     </div>
   )
 }

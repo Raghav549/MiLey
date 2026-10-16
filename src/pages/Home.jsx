@@ -1,301 +1,274 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import {
-  Play,
-  Flame,
-  Sparkles,
-  Disc,
-  Radio,
-  Upload as UploadIcon,
-  MessageCircle,
-  Calendar,
-  Bell,
-  BadgeCheck,
-  Layers,
-} from 'lucide-react'
+import { auth } from '../lib/auth'
 import { useLiveShared } from '../lib/useLive'
 import { usePlayer } from '../context/PlayerContext'
-import { useLikes } from '../hooks/useLikes'
 import { useNotifications } from '../hooks/useNotifications'
 import Logo from '../components/Logo'
-import { TrackCard, TrackRow } from '../components/TrackViews'
+import { TrackCard, TrackRow, Cover } from '../components/TrackViews'
 import EmptyState from '../components/EmptyState'
-import { MOODS, fallbackCover, getSongTheme } from '../musicHelpers'
+import { SearchIcon, SparkleIcon, RadioIcon, PodcastIcon, RoomIcon, CalendarIcon, ChannelIcon, BellIcon, MessageIcon, UploadIcon } from '../components/icons'
+import { MOOD_SUGGESTIONS, isPublicVisible } from '../musicHelpers'
+
+function greeting() {
+  const h = new Date().getHours()
+  if (h < 12) return 'Good morning'
+  if (h < 18) return 'Good afternoon'
+  return 'Good evening'
+}
 
 export default function Home() {
   const navigate = useNavigate()
-  const { playTrack } = usePlayer()
-  const { isLiked, toggleLike } = useLikes()
-  const { unreadCount } = useNotifications()
+  const user = auth.getCurrentUser()
+  const { history } = usePlayer()
+  const { unread } = useNotifications()
+  const { data: allTracks, loading } = useLiveShared('tracks', { order: '-createdAt', limit: 300 })
+  const { data: allPlaylists } = useLiveShared('playlists', { order: '-createdAt', limit: 120 })
+  const { data: categories } = useLiveShared('categories', { order: 'name', limit: 200 })
+  const { data: activeRooms } = useLiveShared('voice_rooms', { order: '-createdAt', limit: 20 })
+  const [selectedMood, setSelectedMood] = useState('All')
 
-  const { data: tracks = [], loading } = useLiveShared('tracks', {
-    order: '-createdAt',
-    limit: 200,
-  })
-  const { data: rooms = [] } = useLiveShared('rooms', { order: '-createdAt', limit: 20 })
-  const { data: channels = [] } = useLiveShared('channels', { order: '-createdAt', limit: 30 })
-
-  const trending = useMemo(
-    () =>
-      [...tracks]
-        .sort((a, b) => (b.plays || 0) + (b.likes || 0) * 3 - ((a.plays || 0) + (a.likes || 0) * 3))
-        .slice(0, 10),
-    [tracks]
+  const publicTracks = useMemo(() => (allTracks || []).filter(isPublicVisible), [allTracks])
+  const songs = useMemo(() => publicTracks.filter((t) => t.type !== 'podcast'), [publicTracks])
+  const podcasts = useMemo(() => publicTracks.filter((t) => t.type === 'podcast'), [publicTracks])
+  const publicPlaylists = useMemo(
+    () => (allPlaylists || []).filter((p) => !p.visibility || p.visibility === 'public'),
+    [allPlaylists]
   )
 
-  const featured = trending[0] || tracks[0]
-  const featuredTheme = getSongTheme(featured)
+  const moods = useMemo(() => {
+    const dynamic = (categories || []).filter((c) => c.kind === 'mood').map((c) => c.name)
+    return ['All', ...Array.from(new Set([...MOOD_SUGGESTIONS, ...dynamic]))]
+  }, [categories])
+
+  const trending = useMemo(
+    () => [...songs].sort((a, b) => (b.plays || 0) + (b.likesCount || 0) * 2 - ((a.plays || 0) + (a.likesCount || 0) * 2)).slice(0, 12),
+    [songs]
+  )
+
+  const newReleases = useMemo(() => songs.slice(0, 12), [songs])
+
+  const forYou = useMemo(() => {
+    const topGenre = history[0]?.genre
+    const pool = selectedMood === 'All'
+      ? (topGenre ? songs.filter((t) => t.genre === topGenre) : songs)
+      : songs.filter((t) => (t.mood || '').toLowerCase() === selectedMood.toLowerCase())
+    return (pool.length ? pool : songs).slice(0, 12)
+  }, [songs, history, selectedMood])
+
+  const liveRoomCount = useMemo(() => (activeRooms || []).filter((r) => !r.ended).length, [activeRooms])
 
   return (
-    <div className="px-4 pt-5 pb-8 max-w-2xl mx-auto space-y-7">
-      {/* Header */}
-      <header className="flex items-center justify-between">
-        <div
-          onClick={() => window.dispatchEvent(new CustomEvent('miley:replay-splash'))}
-          className="cursor-pointer"
-          title="Tap to replay Animated Splash Screen"
-        >
+    <div className="px-4 md:px-8 pt-[calc(env(safe-area-inset-top,0px)+0.9rem)] space-y-7 max-w-6xl mx-auto w-full">
+      {/* Top header */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 md:hidden">
           <Logo size={32} />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="hidden md:block">
+          <p className="text-xs text-white/40">{greeting()}</p>
+          <h1 className="font-display font-bold text-2xl text-white">
+            {user?.displayName || 'Welcome to MiLey'}
+          </h1>
+        </div>
+        <div className="flex items-center gap-2 ml-auto">
           <button
-            onClick={() => navigate('/premieres')}
-            aria-label="Premieres"
-            className="p-2 rounded-full bg-bg-secondary border border-white/10 text-text-secondary hover:text-text-primary"
+            onClick={() => navigate('/search')}
+            className="flex items-center gap-2 card-surface rounded-2xl px-3.5 py-2 text-xs text-white/50 hover:text-white/80"
           >
-            <Calendar className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => navigate('/rooms')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg-secondary border border-white/10 text-xs font-medium hover:border-accent-primary/40"
-          >
-            <Radio className="w-3.5 h-3.5 text-accent-secondary animate-pulse" />
-            <span>Rooms {rooms.length > 0 ? `(${rooms.length})` : ''}</span>
-          </button>
-          <button
-            onClick={() => navigate('/notifications')}
-            aria-label="Notifications"
-            className="relative p-2 rounded-full bg-bg-secondary border border-white/10 text-text-secondary hover:text-text-primary"
-          >
-            <Bell className="w-4 h-4" />
-            {unreadCount > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-accent-secondary text-white text-[10px] font-bold flex items-center justify-center">
-                {unreadCount > 9 ? '9+' : unreadCount}
-              </span>
-            )}
+            <SearchIcon size={16} />
+            <span>Search songs, artists, podcasts…</span>
           </button>
           <button
             onClick={() => navigate('/messages')}
             aria-label="Messages"
-            className="p-2 rounded-full bg-bg-secondary border border-white/10 text-text-secondary hover:text-text-primary"
+            className="w-10 h-10 rounded-2xl card-surface flex items-center justify-center text-white/75 hover:text-white relative shrink-0"
           >
-            <MessageCircle className="w-4 h-4" />
+            <MessageIcon size={18} />
           </button>
-        </div>
-      </header>
-
-      {/* Hero Featured Banner with Active Song Theme */}
-      {featured ? (
-        <div
-          onClick={() => playTrack(featured, tracks)}
-          className="relative rounded-3xl overflow-hidden p-5 cursor-pointer border shadow-xl transition-all hover:scale-[1.005]"
-          style={{
-            borderColor: `${featuredTheme.primaryColor}55`,
-            background: featured.coverUrl
-              ? `linear-gradient(125deg, rgba(11,11,11,0.92) 25%, ${featuredTheme.primaryColor}33 100%), url(${featured.coverUrl}) center/cover`
-              : featuredTheme.bgStyle,
-          }}
-        >
-          <span
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-black/60 border border-white/15"
-            style={{ color: featuredTheme.primaryColor }}
-          >
-            <Flame className="w-3.5 h-3.5" /> Featured Track · {featuredTheme.name}
-          </span>
-          <h1
-            className="mt-3 text-2xl sm:text-3xl font-bold leading-tight line-clamp-2"
-            style={{ fontFamily: 'var(--font-display)' }}
-          >
-            {featured.title}
-          </h1>
-          <p className="text-sm text-text-secondary mt-1">
-            {featured.artistName || 'Unknown Artist'}{' '}
-            {featured.genre ? `· ${featured.genre}` : ''}
-          </p>
-          <div className="mt-4 flex items-center gap-2.5 flex-wrap">
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                playTrack(featured, tracks)
-              }}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-[#0B0B0B] font-semibold text-sm shadow-lg"
-              style={{ backgroundColor: featuredTheme.primaryColor }}
-            >
-              <Play className="w-4 h-4 fill-current" /> Play Now
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                navigate('/upload?mode=bulk')
-              }}
-              className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-semibold text-white"
-            >
-              <Layers className="w-3.5 h-3.5 text-accent-primary" /> Bulk Upload + Themes
-            </button>
-          </div>
-        </div>
-      ) : (
-        !loading && (
-          <EmptyState
-            icon={Disc}
-            title="Welcome to MiLey — Drop the First Beat"
-            subtitle="Upload songs or albums with Direct Song Themes on mileymusic.space."
-            action={
-              <button
-                onClick={() => navigate('/upload?mode=bulk')}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-accent-primary text-[#0B0B0B] font-semibold text-xs"
-              >
-                <UploadIcon className="w-4 h-4" /> Bulk Upload Tracks + Themes
-              </button>
-            }
-          />
-        )
-      )}
-
-      {/* Mood Quick Filters */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-base font-bold" style={{ fontFamily: 'var(--font-display)' }}>
-            Vibe by Mood
-          </h2>
           <button
-            onClick={() => navigate('/explore')}
-            className="text-xs text-accent-primary font-medium"
+            onClick={() => navigate('/notifications')}
+            aria-label="Notifications"
+            className="w-10 h-10 rounded-2xl card-surface flex items-center justify-center text-white/75 hover:text-white relative shrink-0"
           >
-            See all
+            <BellIcon size={18} />
+            {unread > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full btn-brand text-[10px] font-bold text-black flex items-center justify-center">
+                {unread > 9 ? '9+' : unread}
+              </span>
+            )}
           </button>
         </div>
-        <div className="grid grid-cols-4 gap-2">
-          {MOODS.slice(0, 8).map((m) => (
-            <button
-              key={m.id}
-              onClick={() => navigate(`/explore?mood=${m.id}`)}
-              className={`p-3 rounded-2xl bg-gradient-to-br ${m.gradient} border border-white/10 text-left hover:scale-[1.02] transition-transform`}
-            >
-              <span
-                className="block w-2.5 h-2.5 rounded-full mb-2"
-                style={{ background: m.color }}
-              />
-              <span className="text-xs font-semibold">{m.label}</span>
-            </button>
-          ))}
-        </div>
-      </section>
+      </div>
 
-      {/* Featured Creator Channels */}
-      {channels.length > 0 && (
-        <section>
-          <div className="flex items-center justify-between mb-3">
-            <h2
-              className="text-base font-bold flex items-center gap-1.5"
-              style={{ fontFamily: 'var(--font-display)' }}
-            >
-              <Radio className="w-4 h-4 text-accent-primary" /> Creator Channels
-            </h2>
-            <button
-              onClick={() => navigate('/channel-setup')}
-              className="text-xs text-accent-primary font-medium"
-            >
-              Your Channel
+      {/* Quick actions hub */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+        <QuickAction
+          icon={<RoomIcon size={18} className="grad-brand-text" />}
+          title="Voice Rooms"
+          sub={liveRoomCount ? `${liveRoomCount} live now` : 'Host or join'}
+          onClick={() => navigate('/rooms')}
+        />
+        <QuickAction
+          icon={<UploadIcon size={18} className="grad-brand-text" />}
+          title="Bulk Studio"
+          sub="Direct song themes"
+          onClick={() => navigate('/upload')}
+        />
+        <QuickAction
+          icon={<CalendarIcon size={18} className="grad-brand-text" />}
+          title="Premieres"
+          sub="Live countdowns"
+          onClick={() => navigate('/premieres')}
+        />
+        <QuickAction
+          icon={<ChannelIcon size={18} className="grad-brand-text" />}
+          title="My Channel"
+          sub="Creator studio"
+          onClick={() => navigate('/channel-dashboard')}
+        />
+      </div>
+
+      {/* Mood filter chips */}
+      <div className="flex items-center gap-2 overflow-x-auto no-scrollbar overscroll-x-contain py-1">
+        {moods.map((m) => (
+          <button
+            key={m}
+            onClick={() => setSelectedMood(m)}
+            className={`px-4 py-2 rounded-full text-xs font-medium shrink-0 transition-all ${
+              selectedMood === m ? 'btn-brand text-black' : 'card-surface text-white/70 hover:text-white'
+            }`}
+          >
+            {m}
+          </button>
+        ))}
+      </div>
+
+      {!loading && publicTracks.length === 0 && (
+        <EmptyState
+          icon={<SparkleIcon size={26} className="grad-brand-text" />}
+          title="The stage is yours"
+          subtitle="No public tracks have been uploaded yet. Be the first creator on MiLey — upload a song, album, or podcast."
+          action={
+            <button onClick={() => navigate('/upload')} className="btn-brand text-black font-semibold px-6 py-3 rounded-2xl text-sm">
+              Upload First Track
             </button>
-          </div>
-          <div className="flex gap-3 overflow-x-auto pb-2 -mx-4 px-4">
-            {channels.slice(0, 12).map((ch) => (
-              <div
-                key={ch.id}
-                onClick={() => navigate(`/channel/${ch.username}`)}
-                className="w-28 shrink-0 p-2.5 rounded-2xl bg-bg-secondary border border-white/5 hover:border-accent-primary/40 cursor-pointer text-center"
-              >
-                <div
-                  className="w-14 h-14 rounded-2xl mx-auto overflow-hidden flex items-center justify-center text-base font-bold text-black mb-1.5"
-                  style={{ background: fallbackCover(ch.name) }}
-                >
-                  {ch.avatarUrl ? (
-                    <img
-                      src={ch.avatarUrl}
-                      alt={ch.name}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    (ch.name || 'C')[0]
-                  )}
-                </div>
-                <div className="flex items-center justify-center gap-0.5">
-                  <p className="text-xs font-semibold truncate">{ch.name}</p>
-                  {ch.verified && (
-                    <BadgeCheck className="w-3.5 h-3.5 text-accent-primary shrink-0" />
-                  )}
-                </div>
-                <p className="text-[10px] text-text-secondary font-mono truncate">
-                  @{ch.username}
-                </p>
-              </div>
-            ))}
-          </div>
-        </section>
+          }
+        />
       )}
 
-      {/* Trending Carousel */}
+      {/*Recently played*/}
+      {history.length > 0 && (
+        <Section title="Recently Played" action={() => navigate('/library')}>
+          <div className="flex gap-4 overflow-x-auto no-scrollbar overscroll-x-contain pb-1">
+            {history.slice(0, 10).map((t) => (
+              <TrackCard key={t.id} track={t} queueList={history} />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* Recommended For You */}
+      {forYou.length > 0 && (
+        <Section
+          title={selectedMood === 'All' ? 'Recommended For You' : `${selectedMood} Picks`}
+          icon={<SparkleIcon size={18} className="grad-brand-text" />}
+        >
+          <div className="flex gap-4 overflow-x-auto no-scrollbar overscroll-x-contain pb-1">
+            {forYou.map((t) => (
+              <TrackCard key={t.id} track={t} queueList={forYou} />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* Trending Songs */}
       {trending.length > 0 && (
-        <section>
-          <div className="flex items-center justify-between mb-3">
-            <h2
-              className="text-base font-bold flex items-center gap-1.5"
-              style={{ fontFamily: 'var(--font-display)' }}
-            >
-              <Flame className="w-4 h-4 text-accent-secondary" /> Trending Right Now
-            </h2>
-          </div>
-          <div className="flex gap-3.5 overflow-x-auto pb-2 -mx-4 px-4">
+        <Section title="Trending Songs" icon={<RadioIcon size={18} className="grad-brand-text" />} action={() => navigate('/explore')}>
+          <div className="flex gap-4 overflow-x-auto no-scrollbar overscroll-x-contain pb-1">
             {trending.map((t) => (
-              <TrackCard
-                key={t.id}
-                track={t}
-                list={trending}
-                isLiked={isLiked(t.id)}
-                onToggleLike={toggleLike}
-              />
+              <TrackCard key={t.id} track={t} queueList={trending} />
             ))}
           </div>
-        </section>
+        </Section>
       )}
 
-      {/* Fresh Releases */}
-      {tracks.length > 0 && (
-        <section>
-          <div className="flex items-center justify-between mb-2">
-            <h2
-              className="text-base font-bold flex items-center gap-1.5"
-              style={{ fontFamily: 'var(--font-display)' }}
-            >
-              <Sparkles className="w-4 h-4 text-accent-primary" /> Fresh Drops
-            </h2>
-            <span className="text-xs text-text-secondary">{tracks.length} tracks</span>
-          </div>
-          <div className="space-y-1">
-            {tracks.slice(0, 15).map((t, i) => (
-              <TrackRow
-                key={t.id}
-                track={t}
-                list={tracks}
-                index={i}
-                isLiked={isLiked(t.id)}
-                onToggleLike={toggleLike}
-              />
+      {/* New Releases */}
+      {newReleases.length > 0 && (
+        <Section title="New Releases">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
+            {newReleases.slice(0, 6).map((t, i) => (
+              <TrackRow key={t.id} track={t} queueList={newReleases} index={i} />
             ))}
           </div>
-        </section>
+        </Section>
+      )}
+
+      {/* Popular Playlists */}
+      {publicPlaylists.length > 0 && (
+        <Section title="Popular Playlists" action={() => navigate('/explore')}>
+          <div className="flex gap-4 overflow-x-auto no-scrollbar overscroll-x-contain pb-1">
+            {publicPlaylists.slice(0, 10).map((pl) => (
+              <button
+                key={pl.id}
+                onClick={() => navigate(`/playlist/${pl.id}`)}
+                className="w-36 shrink-0 text-left group"
+              >
+                <div className="w-36 h-36">
+                  <Cover track={{ title: pl.title, coverUrl: pl.coverUrl }} size={144} rounded="rounded-2xl" />
+                </div>
+                <p className="mt-2 text-sm font-medium text-white truncate">{pl.title}</p>
+                <p className="text-xs text-white/45 truncate">by {pl.ownerName || 'MiLey'}</p>
+              </button>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* Featured Podcasts */}
+      {podcasts.length > 0 && (
+        <Section title="Featured Podcasts" icon={<PodcastIcon size={18} className="grad-brand-text" />}>
+          <div className="flex gap-4 overflow-x-auto no-scrollbar overscroll-x-contain pb-1">
+            {podcasts.slice(0, 10).map((t) => (
+              <TrackCard key={t.id} track={t} queueList={podcasts} />
+            ))}
+          </div>
+        </Section>
       )}
     </div>
+  )
+}
+
+function Section({ title, icon, action, children }) {
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {icon}
+          <h2 className="font-display font-bold text-lg text-white">{title}</h2>
+        </div>
+        {action && (
+          <button onClick={action} className="text-xs text-white/50 hover:text-white">
+            See all
+          </button>
+        )}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function QuickAction({ icon, title, sub, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="card-surface rounded-2xl p-3.5 flex items-center gap-3 text-left hover:bg-white/[0.06] transition-colors"
+    >
+      <div className="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center shrink-0">{icon}</div>
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-white truncate">{title}</p>
+        <p className="text-[11px] text-white/40 truncate">{sub}</p>
+      </div>
+    </button>
   )
 }

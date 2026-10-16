@@ -1,47 +1,47 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en" translate="no">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="google" content="notranslate" />
+    <title>MiLey — Global Beats, Your Stage | mileymusic.space</title>
+    <meta name="description" content="MiLey (mileymusic.space) — Stream music from channels everywhere, upload your own tracks with custom song themes, and join live voice rooms." />
+    <link rel="canonical" href="https://mileymusic.space/" />
+    <meta property="og:title" content="MiLey — Global Beats, Your Stage" />
+    <meta property="og:site_name" content="mileymusic.space" />
+    <meta property="og:url" content="https://mileymusic.space" />
     <meta name="theme-color" content="#0B0B0B" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="description" content="MiLey — Stream music from channels everywhere, bulk upload songs with custom Song Themes, and hang out in live Listen Rooms on mileymusic.space." />
-    <link rel="canonical" href="https://mileymusic.space" />
-    <meta property="og:title" content="MiLey — Global Beats, Your Stage" />
-    <meta property="og:description" content="Stream music from channels everywhere, upload your tracks, and hang out in live Listen Rooms." />
-    <meta property="og:url" content="https://mileymusic.space" />
-    <meta property="og:site_name" content="MiLey (mileymusic.space)" />
-    <meta property="og:type" content="website" />
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" type="image/svg+xml" href="/icon-192.svg" />
     <link rel="apple-touch-icon" href="/icon-192.svg" />
-    <title>MiLey — Global Beats, Your Stage | mileymusic.space</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sora:wght@600;700;800&display=swap" rel="stylesheet" />
     <style>
       :root {
-        --bg-primary: 11 11 11;
-        --bg-secondary: 20 20 24;
-        --text-primary: 245 245 247;
-        --text-secondary: 156 163 175;
-        --accent-primary: 0 224 168;
-        --accent-secondary: 255 61 174;
-        --font-display: 'Syne', system-ui, sans-serif;
-        --font-body: 'DM Sans', system-ui, sans-serif;
-        --font-mono: 'JetBrains Mono', monospace;
+        --sat: env(safe-area-inset-top, 0px);
+        --sab: env(safe-area-inset-bottom, 0px);
+        --sal: env(safe-area-inset-left, 0px);
+        --sar: env(safe-area-inset-right, 0px);
       }
-      html, body {
-        background-color: #0B0B0B;
-        color: #F5F5F7;
-        margin: 0;
-        padding: 0;
+      html {
+        min-height: calc(100% + var(--sat));
+        -webkit-tap-highlight-color: transparent;
+        -webkit-overflow-scrolling: touch;
+        touch-action: manipulation;
       }
+      html, body { overscroll-behavior: none; margin: 0; }
+      body { min-height: 100dvh; overflow: hidden; background: rgb(var(--color-bg, 11 11 11)); -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+      input, textarea, [contenteditable] { -webkit-user-select: text; user-select: text; }
+      #app-shell { display: contents; }
+      #app-shell > #root { position: fixed; top: 0; left: 0; right: 0; bottom: 0; }
+      #app-shell > #root > .h-full:first-child > :last-child:not(.fixed) { position: relative; z-index: 50; }
     </style>
   </head>
-  <body class="bg-bg-primary text-text-primary antialiased selection:bg-accent-primary selection:text-white overflow-x-hidden">
-    <div id="root"></div>
+  <body>
+    <div id="app-shell"><div id="root"></div></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

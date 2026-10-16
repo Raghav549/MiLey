@@ -12,23 +12,27 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
 import android.provider.Settings;
-import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import androidx.webkit.WebViewAssetLoader;
+
 import org.json.JSONObject;
+
+import java.io.InputStream;
 
 /**
  * MiLey Native Android MainActivity
- * Connects WebView to https://mileymusic.space (or bundled assets), keeps music playing
- * when the user closes/minimizes the app, and coordinates with:
+ * Serves bundled assets under https://mileymusic.space via WebViewAssetLoader,
+ * keeps music playing when the user closes/minimizes the app, and coordinates with:
  *   1. MusicPlaybackService (Foreground Media Notification & WakeLock)
  *   2. CameraTopBarService (Pro Music Banner anchored in the Camera Top Bar Cutout)
  */
@@ -74,7 +78,6 @@ public class MainActivity extends Activity {
         window.setStatusBarColor(Color.parseColor("#0B0B0B"));
         window.setNavigationBarColor(Color.parseColor("#0B0B0B"));
 
-        // Extend into the camera cutout area so the Camera Top Bar Music Banner hugs the lens
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             WindowManager.LayoutParams lp = window.getAttributes();
             lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
@@ -102,6 +105,27 @@ public class MainActivity extends Activity {
 
         webView.addJavascriptInterface(new MiLeyNativeBridge(), "MiLeyNative");
 
+        final WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
+                .setDomain("mileymusic.space")
+                .addPathHandler("/", path -> {
+                    try {
+                        String clean = (path == null || path.isEmpty() || path.equals("/")) ? "index.html" : path;
+                        if (clean.startsWith("/")) clean = clean.substring(1);
+                        InputStream is = getAssets().open("public/" + clean);
+                        String mime = guessMime(clean);
+                        return new WebResourceResponse(mime, "UTF-8", is);
+                    } catch (Exception e) {
+                        // SPA route fallback to index.html
+                        try {
+                            InputStream indexStream = getAssets().open("public/index.html");
+                            return new WebResourceResponse("text/html", "UTF-8", indexStream);
+                        } catch (Exception ignored) {
+                            return null;
+                        }
+                    }
+                })
+                .build();
+
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onPermissionRequest(final PermissionRequest request) {
@@ -110,6 +134,13 @@ public class MainActivity extends Activity {
         });
 
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                WebResourceResponse res = assetLoader.shouldInterceptRequest(request.getUrl());
+                if (res != null) return res;
+                return super.shouldInterceptRequest(view, request);
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
@@ -130,14 +161,27 @@ public class MainActivity extends Activity {
             registerReceiver(commandReceiver, filter);
         }
 
-        // Load bundled production app or deep link from mileymusic.space
         Uri deepLink = getIntent() != null ? getIntent().getData() : null;
         if (deepLink != null && deepLink.getHost() != null && deepLink.getHost().contains("mileymusic.space")) {
             webView.loadUrl(deepLink.toString());
         } else {
-            // Try local bundled asset first, falling back to https://mileymusic.space
-            webView.loadUrl("file:///android_asset/public/index.html");
+            webView.loadUrl("https://mileymusic.space/index.html");
         }
+    }
+
+    private String guessMime(String path) {
+        String lower = path.toLowerCase();
+        if (lower.endsWith(".html")) return "text/html";
+        if (lower.endsWith(".js") || lower.endsWith(".mjs")) return "application/javascript";
+        if (lower.endsWith(".css")) return "text/css";
+        if (lower.endsWith(".json")) return "application/json";
+        if (lower.endsWith(".svg")) return "image/svg+xml";
+        if (lower.endsWith(".png")) return "image/png";
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+        if (lower.endsWith(".webp")) return "image/webp";
+        if (lower.endsWith(".mp3")) return "audio/mpeg";
+        if (lower.endsWith(".wav")) return "audio/wav";
+        return "application/octet-stream";
     }
 
     private void evalJs(final String script) {
@@ -145,9 +189,6 @@ public class MainActivity extends Activity {
         webView.post(() -> webView.evaluateJavascript(script, null));
     }
 
-    /**
-     * JavaScript Bridge exposed as `window.MiLeyNative` inside the web app
-     */
     public class MiLeyNativeBridge {
 
         @JavascriptInterface
@@ -160,7 +201,6 @@ public class MainActivity extends Activity {
                     wakeLock.acquire(4 * 60 * 60 * 1000L);
                 }
 
-                // Start/Update Foreground Media Playback Service
                 Intent serviceIntent = new Intent(MainActivity.this, MusicPlaybackService.class);
                 serviceIntent.putExtra("track_json", jsonPayload);
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -169,7 +209,6 @@ public class MainActivity extends Activity {
                     startService(serviceIntent);
                 }
 
-                // Update Camera Top Bar Overlay Service if active
                 Intent barIntent = new Intent(MainActivity.this, CameraTopBarService.class);
                 barIntent.putExtra("track_json", jsonPayload);
                 barIntent.putExtra("action", "UPDATE");
@@ -180,7 +219,6 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void onAppBackgrounded(String jsonPayload) {
-            // When user closes/minimizes the app while music is playing, show the Camera Top Bar Banner
             launchFloatingCameraBanner(jsonPayload);
         }
 
@@ -212,7 +250,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
-        // Keep WebView audio & timers alive when user backgrounds/closes the app while music plays!
         if (isPlayingMusic && webView != null) {
             webView.resumeTimers();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Settings.canDrawOverlays(this)) {
@@ -238,7 +275,6 @@ public class MainActivity extends Activity {
         if (webView != null && webView.canGoBack()) {
             webView.goBack();
         } else {
-            // Move task to back instead of killing activity so music & Camera Top Bar Banner stay alive!
             moveTaskToBack(true);
         }
     }
