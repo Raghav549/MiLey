@@ -47,11 +47,14 @@ export async function sendWelcomeOnce(user) {
     await db.upsertShared('official_messages', {
       recipientId: user.id,
       title: `Welcome to MiLey, ${user.displayName || 'friend'} 🎧`,
-      body: 'This is your official MiLey channel — approvals, milestones, and platform announcements will arrive here. Explore music from channels worldwide, create playlists, join Voice Rooms, and when you\u2019re ready, start your own Channel to upload tracks.',
+      body: 'This is your official MiLey channel on mileymusic.space — approvals, milestones, and platform announcements will arrive here. Explore music from channels worldwide, bulk upload tracks with Direct Song Themes, and hang out in live Listen Rooms.',
       reason: '', banner: '', actionLabel: 'Explore MiLey', actionUrl: '/', read: false,
     }, docId, { visibleTo: `user:${user.id}`, writableBy: `user:${user.id}` })
   } catch (e) { /* best-effort */ }
 }
+
+export const ensureOfficialWelcome = sendWelcomeOnce
+
 
 // Live official-messages thread for the current user, newest last (chat order).
 export function useOfficialThread() {

@@ -1,743 +1,1256 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { auth } from '../lib/auth'
+import {
+  ArrowLeft,
+  Mic,
+  MicOff,
+  Send,
+  Music,
+  Users,
+  Smile,
+  Crown,
+  Hand,
+  Lock,
+  Plus,
+  Trash2,
+  Play,
+  Palette,
+  SkipForward,
+  Flame,
+  Volume2,
+  ThumbsUp,
+  Sparkles,
+  Share2,
+  QrCode,
+  BarChart2,
+  Heart,
+  Disc3,
+  Mic2,
+} from 'lucide-react'
 import { db } from '../lib/db'
-import { useLiveShared } from '../lib/useLive'
+import { auth } from '../lib/auth'
 import { realtime } from '../lib/realtime'
 import { share } from '../lib/share'
-import { useTyping } from '../hooks/usePresence'
+import { APP_DOMAIN } from '../lib/supabaseClient'
+import { useLiveShared, usePresence } from '../lib/useLive'
+import { usePlayer } from '../context/PlayerContext'
+import { useLikes } from '../hooks/useLikes'
 import { useVoiceChat } from '../hooks/useVoiceChat'
-import { notify } from '../hooks/useNotifications'
-import { Cover } from '../components/TrackViews'
+import LyricsView from '../components/LyricsView'
+import QRCard from '../components/QRCard'
 import {
-  BackIcon, PlayIcon, PauseIcon, NextIcon, PrevIcon, UsersIcon, SkipVoteIcon, InviteIcon,
-  SendIcon, CloseIcon, PlusIcon, CheckIcon, CrownIcon, ShieldIcon, VolumeIcon,
-  MicOffIcon, MicIcon, SignalIcon, SmileIcon, SeatIcon, LockIcon, TrashIcon,
-  SearchIcon,
-} from '../components/icons'
-import { timeAgo, formatDuration, roomBackgroundStyle } from '../musicHelpers'
+  ROOM_BACKGROUNDS,
+  roomBgStyle,
+  fallbackCover,
+  getSongTheme,
+  formatDuration,
+} from '../musicHelpers'
 
-// Premium reaction set — float up from the sender's seat avatar.
-const REACTIONS = ['❤️', '🔥', '👏', '😂', '😍', '😮', '🎉', '🤝', '👑', '🎵', '💯', '⭐']
-const SEAT_COUNT = 9
+const REACTIONS = ['🔥', '❤️', '🎵', '👏', '🚀', '✨', '💃', '🎧']
+
+const DJ_SOUNDBOARD = [
+  { id: 'airhorn', label: 'Airhorn', emoji: '📯', freq: 520, type: 'sawtooth' },
+  { id: 'drop', label: '808 Drop', emoji: '💥', freq: 95, type: 'sine' },
+  { id: 'cheer', label: 'Applause', emoji: '👏', freq: 740, type: 'triangle' },
+  { id: 'scratch', label: 'Scratch', emoji: '💿', freq: 410, type: 'square' },
+  { id: 'chime', label: 'Starlight', emoji: '✨', freq: 980, type: 'sine' },
+]
+
+// Synthesize zero-latency DJ Soundboard audio effects via Web Audio API
+function playDjSoundEffect(sfx) {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext
+    if (!Ctx) return
+    const ctx = new Ctx()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = sfx.type || 'sawtooth'
+    osc.frequency.setValueAtTime(sfx.freq || 440, ctx.currentTime)
+    if (sfx.id === 'drop') {
+      osc.frequency.exponentialRampToValueAtTime(38, ctx.currentTime + 0.55)
+    } else if (sfx.id === 'airhorn') {
+      osc.frequency.setValueAtTime(520, ctx.currentTime)
+      osc.frequency.setValueAtTime(620, ctx.currentTime + 0.12)
+    } else if (sfx.id === 'chime') {
+      osc.frequency.exponentialRampToValueAtTime(1480, ctx.currentTime + 0.45)
+    }
+    gain.gain.setValueAtTime(0.18, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.55)
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.56)
+  } catch {
+    /* ignore */
+  }
+}
 
 export default function RoomView() {
-  const { id: roomId } = useParams()
+  const { id } = useParams()
   const navigate = useNavigate()
   const user = auth.getCurrentUser()
-  const { data: rooms, refetch: refetchRooms } = useLiveShared('voice_rooms', { order: '-createdAt', limit: 100 })
-  const room = useMemo(() => (rooms || []).find((r) => r.id === roomId), [rooms, roomId])
-  const { data: roomMsgs, refetch: refetchMsgs } = useLiveShared('room_messages', { filters: { roomId }, order: '-createdAt', limit: 80 })
-  const { data: reactionRows } = useLiveShared('room_reactions', { filters: { roomId }, order: '-createdAt', limit: 40 })
-  const { typingUsers, setTyping } = useTyping(roomId)
-
-  const [onlineCount, setOnlineCount] = useState(1)
+  const {
+    playTrack,
+    currentTrack,
+    isPlaying,
+    togglePlay,
+    currentTime,
+    duration,
+    seek,
+  } = usePlayer()
+  const { isLiked, toggleLike } = useLikes()
+  const [room, setRoom] = useState(null)
   const [text, setText] = useState('')
-  const [localMsgs, setLocalMsgs] = useState([])
-  const [musicOpen, setMusicOpen] = useState(false)
-  const [reactOpen, setReactOpen] = useState(false)
-  const [seatMenu, setSeatMenu] = useState(null)
-  const [floating, setFloating] = useState([])
-  const [toasts, setToasts] = useState([])
-  const [localVolume, setLocalVolume] = useState(1)
-  const [micOn, setMicOn] = useState(false)
-  const [bars, setBars] = useState(3)
-  const [identity, setIdentity] = useState({ name: user?.displayName || 'MiLey user', avatarUrl: user?.avatarUrl || '' })
-  const [showRules, setShowRules] = useState(() => { try { return !localStorage.getItem('miley_room_rules_ack') } catch { return true } })
+  const [pickingTrack, setPickingTrack] = useState(false)
+  const [pickingTheme, setPickingTheme] = useState(false)
+  const [showLyrics, setShowLyrics] = useState(false)
+  const [showPollModal, setShowPollModal] = useState(false)
+  const [pollQuestion, setPollQuestion] = useState('')
+  const [pollOpt1, setPollOpt1] = useState('')
+  const [pollOpt2, setPollOpt2] = useState('')
+  const [qrOpen, setQrOpen] = useState(false)
+  const [floatingEmojis, setFloatingEmojis] = useState([])
+  const [sfxBanner, setSfxBanner] = useState(null)
+  const [unlocked, setUnlocked] = useState(false)
+  const [pwInput, setPwInput] = useState('')
+  const [pwErr, setPwErr] = useState('')
+  const [skipVotes, setSkipVotes] = useState(() => new Set())
+  const endRef = useRef(null)
+  const lastPlayedIdRef = useRef(null)
 
-  const audioRef = useRef(null)
-  const seenReactionIds = useRef(new Set())
-  const roomPresenceRef = useRef(null)
-  const bottomRef = useRef(null)
-  const toastId = useRef(0)
-
-  if (!audioRef.current && typeof Audio !== 'undefined') {
-    audioRef.current = new Audio()
-    audioRef.current.crossOrigin = 'anonymous'
-  }
-
-  const pushToast = (text) => {
-    const id = ++toastId.current
-    setToasts((t) => [...t, { id, text }])
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3500)
-  }
-
-  // Prefer the user's chosen profile name + photo over the raw account (email-derived) name.
-  useEffect(() => {
-    if (!user) return
-    db.getShared('profiles', user.id).then((p) => { if (p) setIdentity({ name: p.displayName || user.displayName || 'MiLey user', avatarUrl: p.avatarUrl || user.avatarUrl || '' }) }).catch(() => {})
-  }, [user?.id])
-
-  const isHost = !!(room && user && room.hostId === user.id)
-  const isAdmin = !!(room && user && (room.admins || []).includes(user.id))
-  const canControl = isHost || isAdmin
-  const seats = room?.seats || Array(SEAT_COUNT).fill(null)
-  const mySeatIndex = seats.findIndex((s) => s && s.userId === user?.id)
-  const isSeated = mySeatIndex >= 0
-  const mySeatMuted = mySeatIndex >= 0 ? !!seats[mySeatIndex]?.muted : false
-
-  // ── Real peer-to-peer voice (native WebRTC mesh) ──
-  const { speakingIds, error: voiceError } = useVoiceChat({
-    roomId, selfId: user?.id, enabled: isSeated, micOn: micOn && !mySeatMuted, volume: localVolume,
+  const { peers = [] } = usePresence(`room:${id}`, {
+    userId: user?.id,
+    name: user?.displayName || 'Listener',
+    avatar: user?.avatarUrl || '',
   })
-  useEffect(() => { if (voiceError) pushToast(voiceError) }, [voiceError])
 
-  // ── Presence: who's actually in the room right now + join/leave banners ──
+  const { joined, muted, activeSpeakers, joinVoice, leaveVoice, toggleMute } = useVoiceChat(
+    id,
+    user
+  )
+
+  const { data: allTracks = [] } = useLiveShared('tracks', { order: '-createdAt', limit: 150 })
+  const { data: messages = [] } = useLiveShared('room_messages', {
+    filters: { roomId: id },
+    order: '-createdAt',
+    limit: 80,
+  })
+
+  const sortedMessages = [...messages].reverse()
+
   useEffect(() => {
-    let disposed = false
-    const join = () => {
-      if (disposed) return
-      roomPresenceRef.current?.leave?.()
-      const p = realtime.presence(`voiceroom-${roomId}`, { name: identity.name, userId: user?.id, avatarUrl: identity.avatarUrl })
-      roomPresenceRef.current = p
-      p.onSync((users) => setOnlineCount(users.length || 1))
-      p.onJoin((u) => { if (u.userId && u.userId !== user?.id) pushToast(`${u.name || 'Someone'} entered the room`) })
-      p.onLeave((u) => { if (u.userId && u.userId !== user?.id) pushToast(`${u.name || 'Someone'} left the room`) })
-    }
-    join()
-    const resync = () => {
-      if (document.visibilityState === 'hidden') return
-      join(); refetchRooms(); refetchMsgs()
-    }
-    document.addEventListener('visibilitychange', resync)
-    window.addEventListener('online', resync)
-    window.addEventListener('focus', resync)
+    if (!id) return
+    db.getShared('rooms', id)
+      .then((r) => setRoom(r))
+      .catch(() => {})
+    const unsub = db.subscribeShared('rooms', (ev) => {
+      if (ev.data?.id === id) setRoom(ev.data)
+    })
     return () => {
-      disposed = true
-      document.removeEventListener('visibilitychange', resync)
-      window.removeEventListener('online', resync)
-      window.removeEventListener('focus', resync)
-      roomPresenceRef.current?.leave?.()
+      if (typeof unsub === 'function') unsub()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId, identity.name])
+  }, [id])
 
-  // ── Connection quality (real navigator.connection when available) ──
+  // Auto-sync playback when room track changes
   useEffect(() => {
-    const conn = navigator.connection || navigator.webkitConnection
-    const update = () => {
-      const t = conn?.effectiveType
-      setBars(t === '4g' ? 3 : t === '3g' ? 2 : t ? 1 : 3)
+    if (!room?.currentTrackId || allTracks.length === 0) return
+    if (lastPlayedIdRef.current === room.currentTrackId) return
+    const found = allTracks.find((t) => t.id === room.currentTrackId)
+    if (found) {
+      lastPlayedIdRef.current = found.id
+      playTrack(found, allTracks)
     }
-    update()
-    conn?.addEventListener?.('change', update)
-    return () => conn?.removeEventListener?.('change', update)
-  }, [])
+  }, [room?.currentTrackId, allTracks, playTrack])
 
-  // ── Local audio element follows the room's shared playback state (one song, synced) ──
+  // Realtime broadcasts for floating reactions, DJ soundboard SFX, and skip votes
   useEffect(() => {
-    const el = audioRef.current
-    if (!el) return
-    if (!room?.currentTrack) { el.pause(); el.removeAttribute('src'); return }
-    if (el.src !== room.currentTrack.audioUrl) el.src = room.currentTrack.audioUrl
-    const expected = room.isPlaying && room.startedAt
-      ? room.position + (Date.now() - new Date(room.startedAt).getTime()) / 1000
-      : room.position
-    if (Math.abs((el.currentTime || 0) - expected) > 3) el.currentTime = Math.max(0, expected)
-    if (room.isPlaying) el.play().catch(() => {})
-    else el.pause()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [room?.currentTrack?.id, room?.currentTrack?.audioUrl, room?.isPlaying, room?.startedAt])
-
-  useEffect(() => {
-    const el = audioRef.current
-    if (el) el.volume = localVolume
-  }, [localVolume])
-
-  useEffect(() => {
-    const el = audioRef.current
-    if (!el) return
-    const onEnd = () => { if (isHost || room?.tempDJUserId === user?.id) advanceQueue() }
-    el.addEventListener('ended', onEnd)
-    return () => el.removeEventListener('ended', onEnd)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isHost, room?.tempDJUserId, room?.queue])
-
-  // ── Floating reactions ──
-  useEffect(() => {
-    for (const r of reactionRows || []) {
-      if (seenReactionIds.current.has(r.id)) continue
-      const age = Date.now() - new Date(r.createdAt).getTime()
-      if (age > 4000) { seenReactionIds.current.add(r.id); continue }
-      seenReactionIds.current.add(r.id)
-      setFloating((f) => [...f, r])
-      setTimeout(() => setFloating((f) => f.filter((x) => x.id !== r.id)), 2400)
+    if (!id) return
+    const ch = realtime.channel(`room-fx:${id}`)
+    ch.on('broadcast', { event: 'emoji' }, (payload) => {
+      const emoji = payload?.emoji || '🔥'
+      const eid = `${Date.now()}-${Math.random()}`
+      setFloatingEmojis((prev) => [...prev, { id: eid, emoji, left: 15 + Math.random() * 70 }])
+      setTimeout(() => {
+        setFloatingEmojis((prev) => prev.filter((e) => e.id !== eid))
+      }, 2200)
+    })
+    ch.on('broadcast', { event: 'sfx' }, (payload) => {
+      if (!payload?.sfx) return
+      playDjSoundEffect(payload.sfx)
+      setSfxBanner(`${payload.userName || 'DJ'} triggered ${payload.sfx.emoji} ${payload.sfx.label}!`)
+      setTimeout(() => setSfxBanner(null), 2400)
+    })
+    ch.on('broadcast', { event: 'skip_vote' }, (payload) => {
+      if (!payload?.userId) return
+      setSkipVotes((prev) => new Set([...prev, payload.userId]))
+    })
+    ch.subscribe()
+    return () => {
+      ch.unsubscribe()
     }
-  }, [reactionRows])
+  }, [id])
 
-  const mergedMsgs = useMemo(() => {
-    return [...(roomMsgs || []), ...localMsgs.filter((lm) => !(roomMsgs || []).some((rm) => rm.userId === lm.userId && rm.text === lm.text))]
-      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
-      .slice(-40)
-  }, [roomMsgs, localMsgs])
+  useEffect(() => {
+    setSkipVotes(new Set())
+  }, [room?.currentTrackId])
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [mergedMsgs.length])
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [sortedMessages.length])
 
-  if (!room) return <div className="h-full flex items-center justify-center text-white/40 text-sm">Loading room…</div>
+  const isHost = room && user?.id && room.hostId === user.id
+  const speakerIds = room?.speakerIds || (room?.hostId ? [room.hostId] : [])
+  const raisedHandIds = room?.raisedHandIds || []
+  const isSpeaker = Boolean(isHost || (user?.id && speakerIds.includes(user.id)))
+  const hasRaisedHand = Boolean(user?.id && raisedHandIds.includes(user.id))
+  const canSpin = Boolean(isHost || room?.openDj || isSpeaker)
+  const queue = Array.isArray(room?.queue) ? room.queue : []
 
-  const setRoom = (patch) => db.updateShared('voice_rooms', roomId, patch)
+  const spinningTrack =
+    allTracks.find((t) => t.id === room?.currentTrackId) || currentTrack || allTracks[0]
+  const activeTheme = getSongTheme(
+    spinningTrack || { songTheme: room?.currentSongTheme }
+  )
 
-  // ── Race-safe room mutation ──
-  // Every seat/queue/admin action here used to compute its patch off the
-  // possibly-stale snapshot from the live-list hook and overwrite the whole
-  // array — so two near-simultaneous actions (two people tapping different
-  // empty seats, a host skipping while a listener requests) could silently
-  // clobber each other (the "seat sometimes doesn't show" bug). Instead:
-  // fetch the freshest row right before mutating, compute the patch against
-  // THAT, write it, then (for seat claims) verify our own change actually
-  // landed and retry against newer data if a concurrent write raced us.
-  const mutateRoom = async (compute, verify) => {
-    let fresh = (await db.getShared('voice_rooms', roomId).catch(() => null)) || room
-    const attempts = verify ? 3 : 1
-    for (let i = 0; i < attempts; i++) {
-      const result = compute(fresh)
-      if (result === null || result === undefined) return false
-      await db.updateShared('voice_rooms', roomId, result)
-      if (!verify) return true
-      const after = await db.getShared('voice_rooms', roomId).catch(() => null)
-      if (after && verify(after)) return true
-      fresh = after || fresh
+  const boostVibe = async (delta = 4) => {
+    if (!room) return
+    const nextScore = Math.min(100, (room.vibeScore || 85) + delta)
+    await db.updateShared('rooms', id, { vibeScore: nextScore })
+    if (nextScore >= 100) {
+      // Trigger celebratory stage emoji shower
+      ;['🔥', '🎉', '✨', '🚀', '💃'].forEach((em, i) => {
+        setTimeout(() => {
+          const eid = `${Date.now()}-${i}-${Math.random()}`
+          setFloatingEmojis((prev) => [...prev, { id: eid, emoji: em, left: 15 + i * 16 }])
+          setTimeout(() => {
+            setFloatingEmojis((prev) => prev.filter((e) => e.id !== eid))
+          }, 2200)
+        }, i * 110)
+      })
     }
-    return false
   }
 
-  // ── Seat management ──
-  const tapSeat = (index) => {
-    const seat = seats[index]
-    if (seat) {
-      if (seat.userId === user?.id || canControl) { setSeatMenu(index); return }
-      pushToast('This seat is already occupied.')
-      return
+  const sendEmoji = (emoji) => {
+    const ch = realtime.channel(`room-fx:${id}`)
+    ch.subscribe()
+    ch.send({ type: 'broadcast', event: 'emoji', payload: { emoji } })
+    const eid = `${Date.now()}-${Math.random()}`
+    setFloatingEmojis((prev) => [...prev, { id: eid, emoji, left: 20 + Math.random() * 60 }])
+    setTimeout(() => {
+      setFloatingEmojis((prev) => prev.filter((e) => e.id !== eid))
+    }, 2200)
+    boostVibe(2)
+  }
+
+  const triggerDjSoundboard = (sfx) => {
+    playDjSoundEffect(sfx)
+    setSfxBanner(`You triggered ${sfx.emoji} ${sfx.label}!`)
+    setTimeout(() => setSfxBanner(null), 2400)
+    const ch = realtime.channel(`room-fx:${id}`)
+    ch.subscribe()
+    ch.send({
+      type: 'broadcast',
+      event: 'sfx',
+      payload: { sfx, userName: user?.displayName || 'DJ' },
+    })
+    boostVibe(3)
+  }
+
+  const sendChat = async (e) => {
+    e.preventDefault()
+    const clean = text.trim()
+    if (!clean) return
+    setText('')
+    await db.insertShared(
+      'room_messages',
+      {
+        roomId: id,
+        senderId: user?.id,
+        senderName: user?.displayName || 'Listener',
+        text: clean,
+      },
+      undefined,
+      { visibleTo: 'public' }
+    )
+  }
+
+  const spinTrack = async (track) => {
+    setPickingTrack(false)
+    if (!canSpin) return
+    lastPlayedIdRef.current = track.id
+    playTrack(track, allTracks)
+    const theme = getSongTheme(track)
+    await db.updateShared('rooms', id, {
+      currentTrackId: track.id,
+      currentTrackTitle: track.title,
+      currentTrackArtist: track.artistName,
+      currentTrackCover: track.coverUrl || '',
+      currentSongTheme: theme,
+    })
+  }
+
+  const addToRoomQueue = async (track) => {
+    setPickingTrack(false)
+    const item = {
+      id: track.id,
+      title: track.title,
+      artistName: track.artistName,
+      coverUrl: track.coverUrl || '',
+      addedBy: user?.displayName || 'Listener',
+      upvotes: 1,
+      upvoterIds: user?.id ? [user.id] : [],
+      songTheme: getSongTheme(track),
     }
-    if (room.seatLocks?.[index]) { pushToast('This seat is locked.'); return }
-    if (isSeated) { pushToast('Leave your current seat first.'); return }
-    joinSeat(index)
-  }
-  const joinSeat = async (index) => {
-    if (isSeated) return
-    const ok = await mutateRoom((fresh) => {
-      const s = fresh.seats || Array(SEAT_COUNT).fill(null)
-      if (s[index] || fresh.seatLocks?.[index]) return null
-      if (s.some((x) => x && x.userId === user.id)) return null
-      const next = [...s]
-      next[index] = { userId: user.id, userName: identity.name, avatarUrl: identity.avatarUrl, muted: false }
-      return { seats: next, seatRequests: (fresh.seatRequests || []).filter((r) => r.userId !== user.id) }
-    }, (after) => (after.seats || [])[index]?.userId === user.id)
-    if (!ok) pushToast('This seat is already occupied.')
-  }
-  const leaveSeat = async () => {
-    await mutateRoom((fresh) => {
-      const s = fresh.seats || Array(SEAT_COUNT).fill(null)
-      const idx = s.findIndex((x) => x && x.userId === user.id)
-      if (idx < 0) return null
-      const next = [...s]; next[idx] = null
-      return { seats: next }
-    })
-  }
-  const requestSeat = async () => {
-    if ((room.seatRequests || []).some((r) => r.userId === user.id)) { pushToast('Seat already requested.'); return }
-    await mutateRoom((fresh) => {
-      if ((fresh.seatRequests || []).some((r) => r.userId === user.id)) return null
-      return { seatRequests: [...(fresh.seatRequests || []), { userId: user.id, userName: identity.name, avatarUrl: identity.avatarUrl }] }
-    })
-    notify(room.hostId, { type: 'room', title: 'Seat request', body: `${identity.name} wants a seat in ${room.name}`, url: `/rooms/${roomId}` })
-    pushToast('Seat requested — waiting for host.')
-  }
-  const approveRequest = async (req) => {
-    const ok = await mutateRoom((fresh) => {
-      const s = fresh.seats || Array(SEAT_COUNT).fill(null)
-      const emptyIdx = s.findIndex((x, i) => !x && !fresh.seatLocks?.[i])
-      if (emptyIdx < 0) return null
-      const next = [...s]
-      next[emptyIdx] = { userId: req.userId, userName: req.userName, avatarUrl: req.avatarUrl, muted: false }
-      return { seats: next, seatRequests: (fresh.seatRequests || []).filter((r) => r.userId !== req.userId) }
-    }, (after) => (after.seats || []).some((x) => x && x.userId === req.userId))
-    if (!ok) { pushToast('No empty seats available.'); return }
-    notify(req.userId, { type: 'room', title: 'Seat approved', body: `You're on stage in ${room.name}`, url: `/rooms/${roomId}` })
-  }
-  const declineRequest = async (req) => {
-    await mutateRoom((fresh) => ({ seatRequests: (fresh.seatRequests || []).filter((r) => r.userId !== req.userId) }))
-  }
-  const toggleMute = async (index) => {
-    await mutateRoom((fresh) => {
-      const s = fresh.seats || Array(SEAT_COUNT).fill(null)
-      if (!s[index]) return null
-      const next = [...s]
-      next[index] = { ...next[index], muted: !next[index].muted }
-      return { seats: next }
-    })
-  }
-  const toggleLock = async (index) => {
-    await mutateRoom((fresh) => {
-      const locks = [...(fresh.seatLocks || Array(SEAT_COUNT).fill(false))]
-      locks[index] = !locks[index]
-      return { seatLocks: locks }
-    })
-  }
-  const kick = async (index) => {
-    await mutateRoom((fresh) => {
-      const s = fresh.seats || Array(SEAT_COUNT).fill(null)
-      if (!s[index]) return null
-      const next = [...s]; next[index] = null
-      return { seats: next }
-    })
-  }
-  const transferOwnership = async (index) => {
-    const target = seats[index]
-    if (!target) return
-    await mutateRoom((fresh) => {
-      const s = fresh.seats || Array(SEAT_COUNT).fill(null)
-      const t = s[index]
-      if (!t) return null
-      return { hostId: t.userId, hostName: t.userName }
-    })
-  }
-  const makeAdmin = async (userId) => {
-    await mutateRoom((fresh) => {
-      const admins = new Set(fresh.admins || []); admins.add(userId)
-      return { admins: [...admins] }
-    })
-  }
-  const removeAdmin = async (userId) => {
-    await mutateRoom((fresh) => ({ admins: (fresh.admins || []).filter((a) => a !== userId) }))
+    const nextQ = [...queue, item]
+    await db.updateShared('rooms', id, { queue: nextQ })
+    if (!room?.currentTrackId && canSpin) {
+      await spinTrack(track)
+    }
   }
 
-  // ── Playback (owner/admin controlled) — one song at a time, history-aware ──
-  const advanceQueue = async () => {
-    await mutateRoom((fresh) => {
-      const q = [...(fresh.queue || [])]
-      const hist = fresh.currentTrack ? [...(fresh.history || []), fresh.currentTrack].slice(-20) : (fresh.history || [])
-      if (q.length === 0) return { currentTrack: null, isPlaying: false, tempDJUserId: null, history: hist }
-      const track = q.shift()
-      return { currentTrack: track, queue: q, isPlaying: true, position: 0, startedAt: new Date().toISOString(), skipVotes: [], tempDJUserId: null, history: hist }
+  const upvoteQueueItem = async (idx) => {
+    if (!user?.id) return
+    const nextQ = queue.map((item, i) => {
+      if (i !== idx) return item
+      const voters = new Set(item.upvoterIds || [])
+      if (voters.has(user.id)) {
+        voters.delete(user.id)
+      } else {
+        voters.add(user.id)
+      }
+      return {
+        ...item,
+        upvoterIds: [...voters],
+        upvotes: voters.size,
+      }
     })
+    // Sort queue by highest upvotes
+    nextQ.sort((a, b) => (b.upvotes || 0) - (a.upvotes || 0))
+    await db.updateShared('rooms', id, { queue: nextQ })
   }
-  const playFromQueue = async (index) => {
-    if (!canControl) return
-    await mutateRoom((fresh) => {
-      const q = [...(fresh.queue || [])]
-      const [track] = q.splice(index, 1)
-      if (!track) return null
-      const hist = fresh.currentTrack ? [...(fresh.history || []), fresh.currentTrack].slice(-20) : (fresh.history || [])
-      return { currentTrack: track, queue: q, isPlaying: true, position: 0, startedAt: new Date().toISOString(), skipVotes: [], tempDJUserId: null, history: hist }
+
+  const playNextFromQueue = async () => {
+    if (!canSpin || queue.length === 0) return
+    const [first, ...rest] = queue
+    const full = allTracks.find((t) => t.id === first.id) || first
+    await db.updateShared('rooms', id, {
+      queue: rest,
+      currentTrackId: full.id,
+      currentTrackTitle: full.title,
+      currentTrackArtist: full.artistName,
+      currentTrackCover: full.coverUrl || '',
+      currentSongTheme: getSongTheme(full),
     })
+    lastPlayedIdRef.current = full.id
+    playTrack(full, allTracks)
   }
-  const prevTrack = async () => {
-    if (!canControl) return
-    await mutateRoom((fresh) => {
-      const hist = [...(fresh.history || [])]
-      if (hist.length === 0) return { position: 0, startedAt: new Date().toISOString(), isPlaying: true }
-      const track = hist.pop()
-      const q = fresh.currentTrack ? [fresh.currentTrack, ...(fresh.queue || [])] : (fresh.queue || [])
-      return { currentTrack: track, queue: q, history: hist, isPlaying: true, position: 0, startedAt: new Date().toISOString(), skipVotes: [], tempDJUserId: null }
-    })
+
+  const removeFromQueue = async (idx) => {
+    const nextQ = queue.filter((_, i) => i !== idx)
+    await db.updateShared('rooms', id, { queue: nextQ })
   }
-  const togglePlayHost = async () => {
-    if (!canControl || !room.currentTrack) return
-    const el = audioRef.current
-    await mutateRoom((fresh) => ({ isPlaying: !fresh.isPlaying, startedAt: new Date().toISOString(), position: el ? el.currentTime : fresh.position }))
-  }
+
   const voteSkip = async () => {
-    let shouldAdvance = false
-    await mutateRoom((fresh) => {
-      const votes = new Set(fresh.skipVotes || []); votes.add(user.id)
-      const arr = [...votes]
-      const seatedCount = Math.max(1, (fresh.seats || []).filter(Boolean).length)
-      shouldAdvance = arr.length >= Math.ceil(seatedCount / 2)
-      return { skipVotes: arr }
-    })
-    if (shouldAdvance) advanceQueue()
-  }
-  const addToQueue = async (track) => {
-    await mutateRoom((fresh) => ({ queue: [...(fresh.queue || []), { ...track, requestedBy: user.id, requestedByName: identity.name }] }))
-    pushToast('Added to queue.')
-  }
-  const removeFromQueue = async (index) => {
-    if (!canControl) return
-    await mutateRoom((fresh) => {
-      const q = [...(fresh.queue || [])]; q.splice(index, 1)
-      return { queue: q }
-    })
-  }
-  const reorderQueue = async (index, dir) => {
-    if (!canControl) return
-    await mutateRoom((fresh) => {
-      const q = [...(fresh.queue || [])]
-      const to = index + dir
-      if (to < 0 || to >= q.length) return null
-      ;[q[index], q[to]] = [q[to], q[index]]
-      return { queue: q }
-    })
-  }
-
-  // ── Chat ──
-  const sendChat = async () => {
-    const val = text.trim()
-    if (!val) return
-    setText(''); setTyping(false)
-    const tempId = `temp-${Date.now()}`
-    setLocalMsgs((prev) => [...prev, { id: tempId, roomId, userId: user.id, userName: identity.name, text: val, createdAt: new Date().toISOString() }])
-    try {
-      await db.insertShared('room_messages', { roomId, userId: user.id, userName: identity.name, text: val }, undefined, { visibleTo: 'public', writableBy: 'anyone' })
-    } finally {
-      setLocalMsgs((prev) => prev.filter((m) => m.id !== tempId))
+    if (!user?.id) return
+    const nextVotes = new Set([...skipVotes, user.id])
+    setSkipVotes(nextVotes)
+    const ch = realtime.channel(`room-fx:${id}`)
+    ch.subscribe()
+    ch.send({ type: 'broadcast', event: 'skip_vote', payload: { userId: user.id } })
+    const threshold = Math.max(1, Math.ceil(Math.max(peers.length, 1) / 2))
+    if (nextVotes.size >= threshold && queue.length > 0) {
+      setSkipVotes(new Set())
+      await playNextFromQueue()
     }
   }
 
-  const sendReaction = async (emoji) => {
-    setReactOpen(false)
-    await db.insertShared('room_reactions', { roomId, seatIndex: isSeated ? mySeatIndex : null, userId: user.id, emoji }, undefined, { visibleTo: 'public', writableBy: 'anyone' })
+  const votePollOption = async (optId) => {
+    if (!room?.poll || !user?.id) return
+    const prevVote = room.poll.voters?.[user.id]
+    if (prevVote === optId) return
+    const nextOptions = (room.poll.options || []).map((o) => {
+      let v = o.votes || 0
+      if (o.id === prevVote) v = Math.max(0, v - 1)
+      if (o.id === optId) v += 1
+      return { ...o, votes: v }
+    })
+    const nextPoll = {
+      ...room.poll,
+      options: nextOptions,
+      voters: { ...(room.poll.voters || {}), [user.id]: optId },
+    }
+    await db.updateShared('rooms', id, { poll: nextPoll })
   }
 
-  const inviteRoom = () => {
-    const url = `${import.meta.env.VITE_APP_URL || window.location.origin}/#/rooms/${roomId}`
-    share.link({ title: room.name, text: `Join my voice room "${room.name}" on MiLey!`, url })
+  const createNewPoll = async (e) => {
+    e.preventDefault()
+    if (!pollQuestion.trim() || !pollOpt1.trim() || !pollOpt2.trim()) return
+    const nextPoll = {
+      question: pollQuestion.trim(),
+      options: [
+        { id: 'opt1', text: pollOpt1.trim(), votes: 1 },
+        { id: 'opt2', text: pollOpt2.trim(), votes: 0 },
+      ],
+      voters: user?.id ? { [user.id]: 'opt1' } : {},
+    }
+    await db.updateShared('rooms', id, { poll: nextPoll })
+    setShowPollModal(false)
+    setPollQuestion('')
+    setPollOpt1('')
+    setPollOpt2('')
   }
 
-  const endRoom = async () => {
-    if (!window.confirm('End this room for everyone? This cannot be undone.')) return
-    await setRoom({ ended: true })
-    navigate('/rooms')
+  const toggleRaiseHand = async () => {
+    if (!user?.id || !room) return
+    const next = hasRaisedHand
+      ? raisedHandIds.filter((u) => u !== user.id)
+      : [...new Set([...raisedHandIds, user.id])]
+    await db.updateShared('rooms', id, { raisedHandIds: next })
   }
 
-  const bgStyle = room.backgroundUrl
-    ? { backgroundImage: `linear-gradient(rgba(11,11,11,0.55), rgba(11,11,11,0.85)), url(${room.backgroundUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-    : roomBackgroundStyle(room.backgroundKey)
+  const approveSpeaker = async (uid) => {
+    if (!isHost || !room) return
+    const nextSpeakers = [...new Set([...speakerIds, uid])]
+    const nextHands = raisedHandIds.filter((u) => u !== uid)
+    await db.updateShared('rooms', id, {
+      speakerIds: nextSpeakers,
+      raisedHandIds: nextHands,
+    })
+  }
+
+  const revokeSpeaker = async (uid) => {
+    if (!isHost || !room || uid === room.hostId) return
+    const nextSpeakers = speakerIds.filter((u) => u !== uid)
+    await db.updateShared('rooms', id, { speakerIds: nextSpeakers })
+  }
+
+  const toggleOpenDj = async () => {
+    if (!isHost || !room) return
+    await db.updateShared('rooms', id, { openDj: !room.openDj })
+  }
+
+  const toggleSyncSongTheme = async () => {
+    if (!room) return
+    await db.updateShared('rooms', id, { syncSongTheme: !room.syncSongTheme })
+  }
+
+  const changeRoomTheme = async (bgId) => {
+    setPickingTheme(false)
+    if (!isHost) return
+    await db.updateShared('rooms', id, { bgTheme: bgId, customBgUrl: '' })
+  }
+
+  const shareRoomUrl = `${APP_DOMAIN}/#/rooms/${id}`
+
+  const handleShareRoom = async () => {
+    await share.link({
+      title: `${room?.name || 'Listen Room'} on MiLey`,
+      text: `Join our live Listen Room "${room?.name || ''}" on MiLey (mileymusic.space)!`,
+      url: shareRoomUrl,
+    })
+  }
+
+  // Password gate for locked rooms
+  if (room?.isPrivate && !isHost && !unlocked) {
+    const checkPw = (e) => {
+      e.preventDefault()
+      if (pwInput.trim() === (room.password || '')) {
+        setUnlocked(true)
+        setPwErr('')
+      } else {
+        setPwErr('Incorrect room password.')
+      }
+    }
+    return (
+      <div
+        style={roomBgStyle(room.bgTheme, room.customBgUrl)}
+        className="min-h-screen flex items-center justify-center p-4"
+      >
+        <form
+          onSubmit={checkPw}
+          className="w-full max-w-sm p-6 rounded-3xl bg-black/70 backdrop-blur-xl border border-white/15 space-y-4 text-center"
+        >
+          <div className="w-12 h-12 rounded-2xl bg-accent-secondary/20 flex items-center justify-center mx-auto">
+            <Lock className="w-6 h-6 text-accent-secondary" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold" style={{ fontFamily: 'var(--font-display)' }}>
+              {room.name}
+            </h2>
+            <p className="text-xs text-text-secondary mt-0.5">
+              This Listen Room is password-locked by {room.hostName}.
+            </p>
+          </div>
+          <input
+            type="password"
+            value={pwInput}
+            onChange={(e) => setPwInput(e.target.value)}
+            placeholder="Enter room password..."
+            autoFocus
+            className="w-full px-4 py-2.5 rounded-xl bg-bg-primary border border-white/15 text-sm text-center focus:outline-none focus:border-accent-primary"
+          />
+          {pwErr && <p className="text-xs text-red-400">{pwErr}</p>}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => navigate('/rooms')}
+              className="flex-1 py-2.5 rounded-full bg-white/10 text-xs font-semibold"
+            >
+              Back
+            </button>
+            <button
+              type="submit"
+              className="flex-1 py-2.5 rounded-full bg-accent-primary text-[#0B0B0B] text-xs font-bold"
+            >
+              Unlock Room
+            </button>
+          </div>
+        </form>
+      </div>
+    )
+  }
+
+  const stageStyle =
+    room?.syncSongTheme !== false
+      ? { background: activeTheme.bgStyle }
+      : roomBgStyle(room?.bgTheme, room?.customBgUrl)
+
+  const totalPollVotes = (room?.poll?.options || []).reduce((s, o) => s + (o.votes || 0), 0) || 1
+  const pct =
+    duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 35
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col text-white" style={{ ...bgStyle, height: 'var(--visual-height, 100dvh)' }}>
-      {/* Header */}
-      <div className="shrink-0 flex items-center gap-2.5 px-4 pt-[calc(env(safe-area-inset-top,0px)+0.75rem)] pb-3">
-        <button onClick={() => navigate('/rooms')} className="text-white/80 shrink-0"><BackIcon size={22} /></button>
-        <div className="w-9 h-9 shrink-0"><Cover track={{ title: room.name, coverUrl: room.coverUrl }} size="fill" rounded="rounded-xl" /></div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold truncate">{room.name}</p>
-          <p className="text-[11px] text-white/50 flex items-center gap-1"><UsersIcon size={11} /> {onlineCount} in room · {room.purpose === 'Custom' ? room.customPurpose : room.purpose}</p>
-        </div>
-        <SignalIcon size={16} bars={bars} className="text-white/60 shrink-0" />
-        <button onClick={inviteRoom} className="p-1.5 text-white/70 shrink-0"><InviteIcon size={18} /></button>
-        {canControl && <button onClick={endRoom} className="text-[11px] text-red-400 font-medium px-1.5 shrink-0">End</button>}
-        {/* Floating spinning disc — opens the Music Panel */}
-        <button onClick={() => setMusicOpen(true)} className="relative w-11 h-11 rounded-full shrink-0 border border-white/20 overflow-hidden shadow-lg" style={{ animation: room.isPlaying ? 'spinDisc 4s linear infinite' : 'none' }}>
-          <Cover track={{ title: room.name, coverUrl: room.coverUrl }} size="fill" rounded="rounded-full" />
-          <span className="absolute inset-0 flex items-center justify-center"><span className="w-3 h-3 rounded-full bg-black/70 border border-white/30" /></span>
-          {(room.queue || []).length > 0 && <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full grad-brand text-[9px] font-bold text-black flex items-center justify-center">{room.queue.length}</span>}
-        </button>
-      </div>
-
-      {/* Seat requests bar (host/admin) */}
-      {canControl && (room.seatRequests || []).length > 0 && (
-        <div className="shrink-0 px-4 pb-2 flex gap-2 overflow-x-auto no-scrollbar overscroll-x-contain">
-          {room.seatRequests.map((req) => (
-            <div key={req.userId} className="flex items-center gap-2 bg-black/40 backdrop-blur rounded-full pl-1 pr-2 py-1 shrink-0">
-              <div className="w-6 h-6 rounded-full overflow-hidden bg-white/10 flex items-center justify-center">{req.avatarUrl ? <img src={req.avatarUrl} className="w-full h-full object-cover" /> : <SeatIcon size={12} />}</div>
-              <span className="text-xs">{req.userName} wants a seat</span>
-              <button onClick={() => approveRequest(req)} className="text-emerald-400"><CheckIcon size={14} /></button>
-              <button onClick={() => declineRequest(req)} className="text-white/40"><CloseIcon size={12} /></button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Seat grid */}
-      <div className="shrink-0 px-6 pt-1 pb-3">
-        <div className="grid grid-cols-3 gap-x-4 gap-y-5 w-full max-w-sm mx-auto">
-          {Array.from({ length: SEAT_COUNT }).map((_, i) => {
-            const seat = seats[i]
-            const locked = room.seatLocks?.[i]
-            const seatIsHost = seat && seat.userId === room.hostId
-            const seatIsAdmin = seat && (room.admins || []).includes(seat.userId)
-            const seatReactions = floating.filter((f) => f.seatIndex === i)
-            const speaking = seat && (seat.userId === user?.id ? speakingIds.has('self') : speakingIds.has(seat.userId))
-            const seatMicOff = seat && (seat.userId === user?.id ? (!micOn || seat.muted) : seat.muted)
-            return (
-              <div key={i} className="flex flex-col items-center gap-1.5 relative">
-                {seatReactions.map((r) => (
-                  <span key={r.id} className="absolute -top-3 text-xl pointer-events-none z-10" style={{ animation: 'floatUpFade 2.4s ease-out forwards' }}>{r.emoji}</span>
-                ))}
-                <button
-                  onClick={() => tapSeat(i)}
-                  className={`w-16 h-16 rounded-full flex items-center justify-center relative transition-all ${seat ? (speaking ? 'ring-2 ring-emerald-400' : 'ring-1 ring-white/15') : 'border-2 border-dashed border-white/15 bg-white/5'} ${locked && !seat ? 'opacity-40' : ''}`}
-                  style={speaking ? { animation: 'speakPulse 1.4s ease-in-out infinite' } : undefined}
-                >
-                  {seat ? (
-                    <div className="w-full h-full rounded-full overflow-hidden bg-gradient-to-br from-emerald-500/40 to-pink-500/40 flex items-center justify-center">
-                      {seat.avatarUrl ? <img src={seat.avatarUrl} className="w-full h-full object-cover" /> : <span className="font-display font-bold">{(seat.userName || '?')[0]}</span>}
-                    </div>
-                  ) : locked ? <LockIcon size={16} className="text-white/30" /> : <PlusIcon size={18} className="text-white/30" />}
-                  {seat && (
-                    <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-black/70 flex items-center justify-center">
-                      {seatMicOff ? <MicOffIcon size={11} className="text-red-400" /> : <MicIcon size={11} className="text-emerald-400" />}
-                    </span>
-                  )}
-                  {seatIsHost && <span className="absolute -top-1.5 -right-1"><CrownIcon size={15} filled className="text-yellow-400" /></span>}
-                  {!seatIsHost && seatIsAdmin && <span className="absolute -top-1.5 -right-1"><ShieldIcon size={13} filled className="text-emerald-400" /></span>}
-                </button>
-                <span className="text-[11px] text-white/60 truncate max-w-[4.2rem] text-center">{seat ? seat.userName : (locked ? 'Locked' : 'Empty')}</span>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Now-playing slim strip (tap to open music panel) */}
-      <button onClick={() => setMusicOpen(true)} className="shrink-0 mx-4 mb-2 rounded-xl bg-black/40 backdrop-blur border border-white/10 px-3 py-2 flex items-center gap-2 text-left">
-        {room.currentTrack ? (
-          <>
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-            <p className="text-xs text-white/80 truncate flex-1"><span className="font-semibold">{room.currentTrack.title}</span> · {room.currentTrack.artistName}</p>
-            {room.isPlaying ? <PauseIcon size={13} className="text-white/50 shrink-0" /> : <PlayIcon size={13} className="text-white/50 shrink-0" />}
-          </>
-        ) : (
-          <p className="text-xs text-white/40 truncate flex-1">Tap to open music — {canControl ? 'pick a track' : 'request a song'}</p>
-        )}
-      </button>
-
-      {/* Chat: messages stack above the permanent input, newest nearest the input */}
-      <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar px-4 flex flex-col justify-end">
-        <div className="space-y-1.5 pb-1">
-          {mergedMsgs.map((m) => (
-            <div key={m.id} className="flex items-baseline gap-2">
-              <span className="text-xs font-semibold grad-brand-text shrink-0">{m.userName}</span>
-              <span className="text-xs text-white/85 break-words min-w-0">{m.text}</span>
-            </div>
-          ))}
-          {typingUsers.length > 0 && <p className="text-[11px] text-white/40 italic">{typingUsers.length === 1 ? 'Someone is typing…' : 'Several people are typing…'}</p>}
-          <div ref={bottomRef} />
-        </div>
-      </div>
-
-      {/* Reaction picker (opens above the input) */}
-      {reactOpen && (
-        <div className="shrink-0 mx-4 mb-2 rounded-2xl bg-black/60 backdrop-blur-xl border border-white/10 p-3 grid grid-cols-6 gap-2 animate-sheet-up">
-          {REACTIONS.map((e) => <button key={e} onClick={() => sendReaction(e)} className="text-2xl active:scale-90 transition-transform">{e}</button>)}
-        </div>
-      )}
-
-      {/* Permanent chat input + reaction button */}
-      <div className="shrink-0 flex items-center gap-2 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.9rem)] pt-1">
-        {isSeated ? (
-          <>
-            <button onClick={() => setMicOn((v) => !v)} disabled={mySeatMuted} title={mySeatMuted ? 'Muted by host' : (micOn ? 'Mute mic' : 'Unmute mic')} className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${mySeatMuted ? 'bg-white/5 text-white/25' : micOn ? 'grad-brand text-black' : 'bg-white/10 text-white/70'}`}>
-              {micOn && !mySeatMuted ? <MicIcon size={18} /> : <MicOffIcon size={18} />}
-            </button>
-            <button onClick={leaveSeat} className="shrink-0 text-[10px] font-semibold px-2 py-2 rounded-full bg-white/10 text-white/70">Leave</button>
-          </>
-        ) : (
-          <button onClick={() => { const empty = seats.findIndex((s, i) => !s && !room.seatLocks?.[i]); empty >= 0 ? joinSeat(empty) : requestSeat() }} className="shrink-0 text-[10px] font-semibold px-2.5 py-2 rounded-full grad-brand text-black"><SeatIcon size={13} /></button>
-        )}
-        <button onClick={() => setReactOpen((v) => !v)} className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${reactOpen ? 'grad-brand text-black' : 'bg-white/10 text-white/70'}`}><SmileIcon size={19} /></button>
-        <input value={text} onChange={(e) => { setText(e.target.value); setTyping(!!e.target.value) }} onBlur={() => setTyping(false)} onKeyDown={(e) => e.key === 'Enter' && sendChat()} placeholder="Say something…" className="flex-1 min-w-0 bg-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder-white/30 outline-none" />
-        <button onClick={sendChat} className="shrink-0 w-10 h-10 rounded-full btn-brand flex items-center justify-center"><SendIcon size={16} color="#0B0B0B" /></button>
-      </div>
-
-      {/* Join/leave toasts — slide in from the right */}
-      <div className="fixed top-[calc(env(safe-area-inset-top,0px)+4.5rem)] right-3 z-50 flex flex-col gap-2 items-end pointer-events-none">
-        {toasts.map((t) => (
-          <div key={t.id} className="bg-black/70 backdrop-blur-xl border border-white/10 rounded-full px-4 py-2 text-xs text-white shadow-lg" style={{ animation: 'slideInRight 0.35s ease-out' }}>{t.text}</div>
+    <div
+      style={stageStyle}
+      className="min-h-screen px-4 pt-4 pb-8 max-w-2xl mx-auto flex flex-col justify-between relative overflow-hidden transition-all duration-700"
+    >
+      {/* Floating Emoji Overlay */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden z-40">
+        {floatingEmojis.map((e) => (
+          <span
+            key={e.id}
+            style={{ left: `${e.left}%` }}
+            className="absolute bottom-24 text-3xl animate-bounce"
+          >
+            {e.emoji}
+          </span>
         ))}
       </div>
 
-      {/* Music panel */}
-      {musicOpen && (
-        <MusicPanel
-          room={room} canControl={canControl} onClose={() => setMusicOpen(false)}
-          onAdd={addToQueue} onRemove={removeFromQueue} onReorder={reorderQueue}
-          onPlayFromQueue={playFromQueue} onTogglePlay={togglePlayHost} onNext={advanceQueue} onPrev={prevTrack} onVoteSkip={voteSkip}
-          localVolume={localVolume} setLocalVolume={setLocalVolume}
-        />
+      {/* Live DJ Soundboard Toast Banner */}
+      {sfxBanner && (
+        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-black/85 border border-accent-primary text-xs font-bold text-accent-primary shadow-2xl animate-bounce">
+          {sfxBanner}
+        </div>
       )}
 
-      {/* Seat action sheet */}
-      {seatMenu != null && (
-        <SeatActionSheet
-          index={seatMenu} seat={seats[seatMenu]} room={room} me={user} isHost={isHost} isAdmin={isAdmin}
-          onClose={() => setSeatMenu(null)}
-          onMute={() => toggleMute(seatMenu)}
-          onLock={() => toggleLock(seatMenu)}
-          onKick={() => kick(seatMenu)}
-          onTransfer={() => transferOwnership(seatMenu)}
-          onMakeAdmin={() => makeAdmin(seats[seatMenu].userId)}
-          onRemoveAdmin={() => removeAdmin(seats[seatMenu].userId)}
-          onLeave={leaveSeat}
-        />
-      )}
+      {/* Top Room Header */}
+      <div className="space-y-3 relative z-10">
+        <div className="flex items-center justify-between gap-2">
+          <button
+            onClick={() => {
+              leaveVoice()
+              navigate('/rooms')
+            }}
+            className="w-9 h-9 rounded-full bg-black/45 backdrop-blur flex items-center justify-center border border-white/10"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
 
-      {showRules && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-end md:items-center justify-center" style={{ height: 'var(--visual-height, 100dvh)' }}>
-          <div className="w-full md:max-w-md bg-[#141414] rounded-t-3xl md:rounded-3xl p-6 pb-[calc(env(safe-area-inset-bottom,0px)+1.5rem)] animate-sheet-up">
-            <div className="w-12 h-12 rounded-2xl grad-brand flex items-center justify-center mb-4"><ShieldIcon size={22} color="#0B0B0B" /></div>
-            <h3 className="font-display font-bold text-white text-lg mb-3">Voice Room Guidelines</h3>
-            <ul className="space-y-2.5 mb-5 text-sm text-white/60">
-              <li className="flex gap-2"><CheckIcon size={16} className="grad-brand-text shrink-0 mt-0.5" /> Be respectful — no harassment, hate speech or spam.</li>
-              <li className="flex gap-2"><CheckIcon size={16} className="grad-brand-text shrink-0 mt-0.5" /> Only the host & admins control music. Request tracks via the queue.</li>
-              <li className="flex gap-2"><CheckIcon size={16} className="grad-brand-text shrink-0 mt-0.5" /> Tap any empty seat to join, then tap the mic to talk — allow microphone access when asked.</li>
-              <li className="flex gap-2"><CheckIcon size={16} className="grad-brand-text shrink-0 mt-0.5" /> Hosts may mute, remove or ban anyone who breaks the rules.</li>
-            </ul>
-            <button onClick={() => { try { localStorage.setItem('miley_room_rules_ack', '1') } catch {} setShowRules(false) }} className="w-full btn-brand text-black font-semibold py-3 rounded-2xl text-sm">I Understand — Enter Room</button>
-            <button onClick={() => navigate('/rooms')} className="w-full mt-2 py-2.5 text-sm text-white/40">Leave</button>
+          <div className="text-center min-w-0 flex-1">
+            <div className="flex items-center justify-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
+              <p className="text-sm font-extrabold truncate" style={{ fontFamily: 'var(--font-display)' }}>
+                {room?.name || 'Listen Room'}
+              </p>
+              {room?.isPrivate && <Lock className="w-3 h-3 text-accent-secondary shrink-0" />}
+            </div>
+            <p className="text-[11px] text-white/70 truncate">
+              {Math.max(peers.length, 1)} in room · {room?.category || 'Music Party'}
+            </p>
           </div>
-        </div>
-      )}
 
-      <style>{`
-        @keyframes floatUpFade { 0% { opacity:0; transform: translateY(0) scale(0.6); } 20% { opacity:1; transform: translateY(-10px) scale(1.1); } 100% { opacity:0; transform: translateY(-52px) scale(1); } }
-        @keyframes slideInRight { 0% { opacity:0; transform: translateX(60px); } 100% { opacity:1; transform: translateX(0); } }
-        @keyframes spinDisc { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        @keyframes speakPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(52,211,153,0.5); } 50% { box-shadow: 0 0 0 6px rgba(52,211,153,0); } }
-      `}</style>
-    </div>
-  )
-}
-
-function SeatActionSheet({ index, seat, room, me, isHost, isAdmin, onClose, onMute, onLock, onKick, onTransfer, onMakeAdmin, onRemoveAdmin, onLeave }) {
-  const isMe = seat && seat.userId === me?.id
-  const seatIsAdmin = seat && (room.admins || []).includes(seat.userId)
-  const canManage = (isHost || isAdmin) && seat && !isMe
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-end justify-center" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md bg-[#141414] rounded-t-3xl p-5 pb-[calc(env(safe-area-inset-bottom,0px)+1.25rem)] animate-sheet-up">
-        <div className="w-10 h-1 bg-white/15 rounded-full mx-auto mb-4" />
-        <p className="text-sm font-semibold text-center mb-4">{seat ? seat.userName : `Seat ${index + 1}`}</p>
-        <div className="space-y-1">
-          {isMe && <ActionBtn icon={<SeatIcon size={17} />} label="Leave Seat" onClick={() => { onLeave(); onClose() }} />}
-          {canManage && (
-            <>
-              <ActionBtn icon={seat.muted ? <MicIcon size={17} /> : <MicOffIcon size={17} />} label={seat.muted ? 'Unmute' : 'Mute'} onClick={() => { onMute(); onClose() }} />
-              <ActionBtn icon={<TrashIcon size={17} />} label="Remove from seat" onClick={() => { onKick(); onClose() }} danger />
-              {isHost && <ActionBtn icon={<CrownIcon size={17} />} label="Transfer Ownership" onClick={() => { onTransfer(); onClose() }} />}
-              {isHost && (seatIsAdmin ? (
-                <ActionBtn icon={<ShieldIcon size={17} />} label="Remove Admin" onClick={() => { onRemoveAdmin(); onClose() }} />
-              ) : (
-                <ActionBtn icon={<ShieldIcon size={17} />} label="Make Admin" onClick={() => { onMakeAdmin(); onClose() }} />
-              ))}
-            </>
-          )}
-          {(isHost || isAdmin) && <ActionBtn icon={<LockIcon size={17} />} label={room.seatLocks?.[index] ? 'Unlock Seat' : 'Lock Seat'} onClick={() => { onLock(); onClose() }} />}
-          {!isMe && !canManage && !(isHost || isAdmin) && <p className="text-xs text-white/30 text-center py-2">Only the host or an admin can manage this seat.</p>}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ActionBtn({ icon, label, onClick, danger }) {
-  return (
-    <button onClick={onClick} className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-white/5 ${danger ? 'text-red-400' : 'text-white'}`}>
-      {icon}<span className="text-sm font-medium">{label}</span>
-    </button>
-  )
-}
-
-function MusicPanel({ room, canControl, onClose, onAdd, onRemove, onReorder, onPlayFromQueue, onTogglePlay, onNext, onPrev, onVoteSkip, localVolume, setLocalVolume }) {
-  const [q, setQ] = useState('')
-  const [results, setResults] = useState([])
-  const [searching, setSearching] = useState(false)
-  const [tab, setTab] = useState('queue') // 'queue' | 'search'
-
-  useEffect(() => {
-    if (!q.trim()) { setResults([]); return }
-    setSearching(true)
-    const t = setTimeout(async () => {
-      try { setResults(await db.searchShared('tracks', q, { fields: ['title', 'artistName'], limit: 25 })) } catch { setResults([]) }
-      setSearching(false)
-    }, 300)
-    return () => clearTimeout(t)
-  }, [q])
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-end justify-center" onClick={onClose} style={{ height: 'var(--visual-height, 100dvh)' }}>
-      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md bg-[#141414] rounded-t-3xl flex flex-col animate-sheet-up" style={{ height: '86vh' }}>
-        <div className="shrink-0 flex items-center justify-between px-5 pt-4 pb-2">
-          <h3 className="font-display font-bold">Music</h3>
-          <button onClick={onClose}><CloseIcon size={18} className="text-white/50" /></button>
-        </div>
-
-        {/* Now playing + controls */}
-        <div className="shrink-0 px-5 pb-3">
-          <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
-            {room.currentTrack ? (
-              <div className="flex items-center gap-3">
-                <Cover track={room.currentTrack} size={44} />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold truncate">{room.currentTrack.title}</p>
-                  <p className="text-xs text-white/40 truncate">{room.currentTrack.artistName}{room.tempDJUserId ? ' · guest pick' : ''}</p>
-                </div>
-                {canControl ? (
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button onClick={onPrev} className="p-2 text-white/70"><PrevIcon size={17} /></button>
-                    <button onClick={onTogglePlay} className="w-10 h-10 rounded-full btn-brand flex items-center justify-center">{room.isPlaying ? <PauseIcon size={16} color="#0B0B0B" /> : <PlayIcon size={16} color="#0B0B0B" />}</button>
-                    <button onClick={onNext} className="p-2 text-white/70"><NextIcon size={18} /></button>
-                  </div>
-                ) : (
-                  <button onClick={onVoteSkip} className="p-2 text-white/60 shrink-0 flex flex-col items-center"><SkipVoteIcon size={16} /><span className="text-[9px]">{(room.skipVotes || []).length}</span></button>
-                )}
-              </div>
-            ) : (
-              <p className="text-xs text-white/40 text-center py-2">Nothing playing. {canControl ? 'Pick a track from the queue below.' : 'Search to request a song.'}</p>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={toggleSyncSongTheme}
+              title="Sync Room Stage with Active Song Theme"
+              className={`px-2.5 py-1.5 rounded-full text-[10px] font-semibold flex items-center gap-1 border ${
+                room?.syncSongTheme !== false
+                  ? 'bg-accent-primary/20 border-accent-primary text-accent-primary'
+                  : 'bg-black/40 border-white/10 text-white/70'
+              }`}
+            >
+              <Sparkles className="w-3 h-3" /> Theme Sync
+            </button>
+            <button
+              onClick={handleShareRoom}
+              aria-label="Share room"
+              className="w-9 h-9 rounded-full bg-black/45 backdrop-blur flex items-center justify-center border border-white/10"
+            >
+              <Share2 className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setQrOpen(true)}
+              aria-label="Room QR card"
+              className="w-9 h-9 rounded-full bg-black/45 backdrop-blur flex items-center justify-center border border-white/10"
+            >
+              <QrCode className="w-4 h-4" />
+            </button>
+            {isHost && (
+              <button
+                onClick={() => setPickingTheme((v) => !v)}
+                aria-label="Change room theme"
+                className="w-9 h-9 rounded-full bg-black/45 backdrop-blur flex items-center justify-center border border-white/10"
+              >
+                <Palette className="w-4 h-4" />
+              </button>
             )}
           </div>
-          <div className="flex items-center gap-2 mt-3">
-            <VolumeIcon size={15} className="text-white/40 shrink-0" />
-            <input type="range" min="0" max="1" step="0.01" value={localVolume} onChange={(e) => setLocalVolume(Number(e.target.value))} className="flex-1 accent-emerald-400" />
-            <span className="text-[10px] text-white/30 w-8 text-right">{Math.round(localVolume * 100)}%</span>
+        </div>
+
+        {/* Room Vibe / Hype Meter Bar */}
+        <div className="p-2.5 rounded-2xl bg-black/50 backdrop-blur-xl border border-white/10 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <Flame className="w-4 h-4 text-amber-400 shrink-0 animate-pulse" />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between text-[10px] font-mono mb-1">
+                <span className="text-amber-300 font-bold uppercase">
+                  Room Vibe Meter · {room?.vibeScore || 88}% 🔥
+                </span>
+                <span className="text-white/60">100% triggers stage party</span>
+              </div>
+              <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-300"
+                  style={{
+                    width: `${room?.vibeScore || 88}%`,
+                    background: `linear-gradient(90deg, ${activeTheme.primaryColor}, #F59E0B, ${activeTheme.secondaryColor})`,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => boostVibe(5)}
+            className="px-3 py-1.5 rounded-full bg-amber-400 text-[#0B0B0B] text-[11px] font-extrabold shrink-0 active:scale-95 transition-transform"
+          >
+            ⚡ Boost Vibe
+          </button>
+        </div>
+
+        {/* CENTRAL SYNCED TURNTABLE & NOW SPINNING STAGE */}
+        <div
+          className="p-4 rounded-3xl bg-black/55 backdrop-blur-2xl border shadow-2xl space-y-3"
+          style={{
+            borderColor: `${activeTheme.primaryColor}66`,
+            boxShadow: `0 16px 40px -10px ${activeTheme.primaryColor}44`,
+          }}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3.5 min-w-0 flex-1">
+              {/* Spinning 3D Turntable Vinyl */}
+              <div
+                onClick={togglePlay}
+                className={`relative w-16 h-16 rounded-full overflow-hidden border-2 shrink-0 cursor-pointer shadow-lg ${
+                  isPlaying ? 'animate-spin' : ''
+                }`}
+                style={{
+                  animationDuration: '7s',
+                  borderColor: activeTheme.primaryColor,
+                  background: fallbackCover(
+                    room?.currentTrackTitle || spinningTrack?.title || 'Room'
+                  ),
+                }}
+              >
+                {(room?.currentTrackCover || spinningTrack?.coverUrl) && (
+                  <img
+                    src={room?.currentTrackCover || spinningTrack?.coverUrl}
+                    alt=""
+                    className="w-full h-full object-cover"
+                  />
+                )}
+                <div className="absolute inset-0 m-auto w-4 h-4 rounded-full bg-[#07070C] border border-white/40" />
+              </div>
+
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9.5px] font-mono uppercase bg-white/10 border border-white/10"
+                    style={{ color: activeTheme.primaryColor }}
+                  >
+                    <Sparkles className="w-2.5 h-2.5" /> {activeTheme.name}
+                  </span>
+                  <span className="text-[10px] font-mono text-white/60">
+                    {room?.openDj ? 'Open DJ Deck' : 'Host DJ Deck'}
+                  </span>
+                </div>
+                <p className="text-base font-bold text-white truncate mt-0.5">
+                  {room?.currentTrackTitle || spinningTrack?.title || 'Select a track to spin'}
+                </p>
+                <p className="text-xs text-white/70 truncate">
+                  {room?.currentTrackArtist || spinningTrack?.artistName || 'Tap + Queue to spin'}
+                </p>
+              </div>
+            </div>
+
+            {/* Stage Controls: Like, Lyrics, Vote Skip, Spin/Queue */}
+            <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+              {spinningTrack && (
+                <button
+                  onClick={() => toggleLike(spinningTrack)}
+                  className="p-2 rounded-full bg-white/10 hover:bg-white/15"
+                  title="Like spinning track"
+                >
+                  <Heart
+                    className={`w-4 h-4 ${
+                      isLiked(spinningTrack.id)
+                        ? 'fill-accent-secondary text-accent-secondary'
+                        : 'text-white/80'
+                    }`}
+                  />
+                </button>
+              )}
+              <button
+                onClick={() => setShowLyrics((v) => !v)}
+                className={`px-2.5 py-1.5 rounded-full text-[11px] font-semibold flex items-center gap-1 border ${
+                  showLyrics
+                    ? 'bg-accent-primary text-[#0B0B0B] border-accent-primary'
+                    : 'bg-white/10 border-white/10 text-white/85'
+                }`}
+              >
+                <Mic2 className="w-3 h-3" /> Lyrics
+              </button>
+              {queue.length > 0 && (
+                <button
+                  onClick={voteSkip}
+                  className="px-2.5 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-[11px] font-semibold flex items-center gap-1"
+                  title="Vote to skip to next song"
+                >
+                  <SkipForward className="w-3 h-3" />
+                  Skip ({skipVotes.size}/{Math.max(1, Math.ceil(Math.max(peers.length, 1) / 2))})
+                </button>
+              )}
+              <button
+                onClick={() => setPickingTrack((v) => !v)}
+                className="px-3 py-1.5 rounded-full text-[#0B0B0B] text-xs font-bold flex items-center gap-1 shadow"
+                style={{ backgroundColor: activeTheme.primaryColor }}
+              >
+                <Plus className="w-3.5 h-3.5" /> {canSpin ? 'Spin / Queue' : 'Add Queue'}
+              </button>
+            </div>
+          </div>
+
+          {/* Live Stage Spectrum Bar + Progress */}
+          <div className="space-y-1.5">
+            <div className="flex items-end justify-center gap-1 h-5">
+              {Array.from({ length: 24 }).map((_, i) => (
+                <span
+                  key={i}
+                  className={`flex-1 rounded-full transition-all duration-300 ${
+                    isPlaying ? 'animate-pulse' : ''
+                  }`}
+                  style={{
+                    height: isPlaying ? `${25 + ((i * 31) % 75)}%` : '20%',
+                    backgroundColor:
+                      i % 2 === 0 ? activeTheme.primaryColor : activeTheme.secondaryColor,
+                    animationDelay: `${i * 55}ms`,
+                  }}
+                />
+              ))}
+            </div>
+            <div className="flex items-center gap-2 text-[10px] font-mono text-white/65">
+              <span>{formatDuration(currentTime)}</span>
+              <div className="flex-1 h-1 rounded-full bg-white/15 overflow-hidden">
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${pct}%`,
+                    background: `linear-gradient(90deg, ${activeTheme.primaryColor}, ${activeTheme.secondaryColor})`,
+                  }}
+                />
+              </div>
+              <span>{formatDuration(duration || spinningTrack?.duration || 195)}</span>
+            </div>
+          </div>
+
+          {/* Live Synced Lyrics Drawer inside Listen Room */}
+          {showLyrics && spinningTrack && (
+            <div className="pt-2 border-t border-white/10">
+              <LyricsView
+                lyrics={spinningTrack.lyrics}
+                currentTime={currentTime}
+                onSeek={seek}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* LIVE DJ SOUNDBOARD PAD BAR */}
+        <div className="p-2.5 rounded-2xl bg-black/45 backdrop-blur-xl border border-white/10 flex items-center justify-between gap-2 overflow-x-auto">
+          <span className="text-[10px] font-mono uppercase tracking-wider text-white/70 flex items-center gap-1 shrink-0 pl-1">
+            <Volume2 className="w-3.5 h-3.5 text-accent-primary" /> DJ Soundboard:
+          </span>
+          <div className="flex items-center gap-1.5">
+            {DJ_SOUNDBOARD.map((sfx) => (
+              <button
+                key={sfx.id}
+                type="button"
+                onClick={() => triggerDjSoundboard(sfx)}
+                className="px-2.5 py-1 rounded-xl bg-white/10 hover:bg-white/20 active:scale-90 border border-white/10 text-[11px] font-semibold flex items-center gap-1 shrink-0 transition-all"
+              >
+                <span>{sfx.emoji}</span>
+                <span>{sfx.label}</span>
+              </button>
+            ))}
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="shrink-0 flex gap-2 px-5 pb-3">
-          <button onClick={() => setTab('queue')} className={`flex-1 text-xs font-semibold py-2 rounded-xl ${tab === 'queue' ? 'btn-brand text-black' : 'card-surface text-white/50'}`}>Queue ({(room.queue || []).length})</button>
-          <button onClick={() => setTab('search')} className={`flex-1 text-xs font-semibold py-2 rounded-xl ${tab === 'search' ? 'btn-brand text-black' : 'card-surface text-white/50'}`}>Search & Request</button>
-        </div>
-
-        <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar px-5">
-          {tab === 'search' ? (
-            <div className="pb-4">
-              <div className="flex items-center gap-2 card-surface rounded-2xl px-3 py-2 mb-2 sticky top-0">
-                <SearchIcon size={15} className="text-white/40 shrink-0" />
-                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search songs to request…" className="flex-1 bg-transparent outline-none text-sm text-white placeholder-white/30" />
+        {/* Upvotable Song Queue + Live Room Poll Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* Upvotable Song Queue */}
+          <div className="p-3 rounded-2xl bg-black/45 backdrop-blur border border-white/10 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-semibold text-white/85 uppercase tracking-wider flex items-center gap-1">
+                <Disc3 className="w-3.5 h-3.5 text-accent-primary" /> Up Next Queue ({queue.length})
+              </p>
+              <div className="flex items-center gap-1.5">
+                {isHost && (
+                  <button
+                    onClick={toggleOpenDj}
+                    className="text-[10px] px-2 py-0.5 rounded-full bg-white/10 text-white/80"
+                  >
+                    {room?.openDj ? 'Open DJ: ON' : 'Host Only'}
+                  </button>
+                )}
+                {canSpin && queue.length > 0 && (
+                  <button
+                    onClick={playNextFromQueue}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-accent-primary text-[#0B0B0B] text-[10px] font-bold"
+                  >
+                    <Play className="w-2.5 h-2.5 fill-current" /> Play Next
+                  </button>
+                )}
               </div>
-              <div className="space-y-1">
-                {searching && <p className="text-xs text-white/30 py-2">Searching…</p>}
-                {!searching && q.trim() && results.length === 0 && <p className="text-xs text-white/30 py-2">No matches.</p>}
-                {!q.trim() && <p className="text-xs text-white/30 py-4 text-center">Type a song name to request it to the queue.</p>}
-                {results.map((t) => (
-                  <div key={t.id} className="flex items-center gap-2 py-1.5">
-                    <Cover track={t} size={38} />
-                    <div className="flex-1 min-w-0"><p className="text-sm text-white truncate">{t.title}</p><p className="text-[11px] text-white/40 truncate">{t.artistName}</p></div>
-                    <button onClick={() => onAdd(t)} className="text-[11px] font-medium px-3 py-1.5 rounded-full btn-brand text-black shrink-0">{canControl ? 'Queue' : 'Request'}</button>
+            </div>
+
+            {queue.length === 0 ? (
+              <p className="text-[11px] text-white/50 py-2">
+                Queue is empty. Tap &quot;Spin / Queue&quot; to add tracks &amp; vote!
+              </p>
+            ) : (
+              <div className="space-y-1.5 max-h-28 overflow-y-auto pr-1">
+                {queue.map((q, idx) => (
+                  <div
+                    key={`${q.id}-${idx}`}
+                    className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-white/5 text-xs"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="font-semibold truncate text-[11px]">
+                        {idx + 1}. {q.title}
+                      </p>
+                      <p className="text-[10px] text-white/60 truncate">
+                        {q.artistName} · by {q.addedBy}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={() => upvoteQueueItem(idx)}
+                        className="px-2 py-0.5 rounded-full bg-accent-primary/15 border border-accent-primary/30 text-accent-primary text-[10px] font-bold flex items-center gap-1"
+                        title="Upvote song to move up queue"
+                      >
+                        <ThumbsUp className="w-2.5 h-2.5" /> {q.upvotes || 1}
+                      </button>
+                      {(isHost || q.addedBy === user?.displayName) && (
+                        <button
+                          onClick={() => removeFromQueue(idx)}
+                          className="p-1 text-white/50 hover:text-red-400"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+
+          {/* Live Room Poll / Track Battle Widget */}
+          <div className="p-3 rounded-2xl bg-black/45 backdrop-blur border border-white/10 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-semibold text-white/85 uppercase tracking-wider flex items-center gap-1">
+                <BarChart2 className="w-3.5 h-3.5 text-accent-secondary" /> Live Room Poll
+              </p>
+              <button
+                onClick={() => setShowPollModal((v) => !v)}
+                className="text-[10px] px-2 py-0.5 rounded-full bg-white/10 hover:bg-white/20 text-accent-primary font-semibold"
+              >
+                + New Poll
+              </button>
             </div>
-          ) : (
-            <div className="space-y-1 pb-4">
-              <p className="text-xs text-white/40 mb-1">Up next</p>
-              {(room.queue || []).length === 0 && <p className="text-xs text-white/30 py-4 text-center">Queue is empty — use Search & Request to add a song.</p>}
-              {(room.queue || []).map((t, i) => (
-                <div key={t.id + i} className="flex items-center gap-2 py-1.5">
-                  <span className="text-xs text-white/30 w-4 shrink-0">{i + 1}</span>
-                  <Cover track={t} size={38} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-white truncate">{t.title}</p>
-                    <p className="text-[11px] text-white/40 truncate">requested by {t.requestedByName || 'someone'}</p>
-                  </div>
-                  <span className="text-[10px] text-white/30 shrink-0">{formatDuration(t.duration)}</span>
-                  {canControl && (
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button onClick={() => onReorder(i, -1)} className="text-white/40 px-1">▲</button>
-                      <button onClick={() => onReorder(i, 1)} className="text-white/40 px-1">▼</button>
-                      <button onClick={() => onPlayFromQueue(i)} className="text-[11px] font-medium px-2 py-1 rounded-full btn-brand text-black">Play</button>
-                      <button onClick={() => onRemove(i)} className="text-white/30"><TrashIcon size={14} /></button>
-                    </div>
-                  )}
-                </div>
+            {room?.poll ? (
+              <div className="space-y-1.5">
+                <p className="text-xs font-bold text-white leading-snug">
+                  {room.poll.question}
+                </p>
+                {(room.poll.options || []).map((opt) => {
+                  const optPct = Math.round(((opt.votes || 0) / totalPollVotes) * 100)
+                  const voted = room.poll.voters?.[user?.id] === opt.id
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => votePollOption(opt.id)}
+                      className={`w-full relative overflow-hidden p-2 rounded-xl border text-left transition-all ${
+                        voted
+                          ? 'border-accent-primary bg-accent-primary/15'
+                          : 'border-white/10 bg-white/5 hover:bg-white/10'
+                      }`}
+                    >
+                      <div
+                        className="absolute inset-y-0 left-0 bg-accent-primary/20 pointer-events-none transition-all duration-300"
+                        style={{ width: `${optPct}%` }}
+                      />
+                      <div className="relative flex items-center justify-between text-[11px] font-semibold">
+                        <span className="truncate">{opt.text}</span>
+                        <span className="font-mono text-[10px] text-accent-primary">
+                          {optPct}% ({opt.votes || 0})
+                        </span>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className="text-[11px] text-white/50 py-2">
+                Start a live poll to ask the room what to spin next!
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* New Poll Modal */}
+        {showPollModal && (
+          <form
+            onSubmit={createNewPoll}
+            className="p-3.5 rounded-2xl bg-black/80 backdrop-blur-xl border border-white/15 space-y-2"
+          >
+            <p className="text-xs font-bold">Launch a Live Room Poll</p>
+            <input
+              value={pollQuestion}
+              onChange={(e) => setPollQuestion(e.target.value)}
+              placeholder="Question (e.g., Next genre: Bollywood vs Electronic?)"
+              className="w-full px-3 py-2 rounded-xl bg-bg-primary border border-white/10 text-xs"
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                value={pollOpt1}
+                onChange={(e) => setPollOpt1(e.target.value)}
+                placeholder="Option 1"
+                className="px-3 py-2 rounded-xl bg-bg-primary border border-white/10 text-xs"
+              />
+              <input
+                value={pollOpt2}
+                onChange={(e) => setPollOpt2(e.target.value)}
+                placeholder="Option 2"
+                className="px-3 py-2 rounded-xl bg-bg-primary border border-white/10 text-xs"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowPollModal(false)}
+                className="px-3 py-1.5 rounded-full bg-white/10 text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-1.5 rounded-full bg-accent-primary text-[#0B0B0B] text-xs font-bold"
+              >
+                Publish Poll
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Theme Picker Drawer (Host) */}
+        {pickingTheme && isHost && (
+          <div className="p-3 rounded-2xl bg-black/80 backdrop-blur border border-white/15">
+            <p className="text-xs font-semibold mb-2">Change Room Stage Theme</p>
+            <div className="grid grid-cols-3 gap-2">
+              {ROOM_BACKGROUNDS.map((b) => (
+                <button
+                  key={b.id}
+                  onClick={() => changeRoomTheme(b.id)}
+                  style={roomBgStyle(b.id)}
+                  className={`h-11 rounded-xl text-[11px] font-semibold border ${
+                    room?.bgTheme === b.id ? 'border-accent-primary' : 'border-white/10'
+                  }`}
+                >
+                  <span className="px-2 py-0.5 rounded bg-black/50 backdrop-blur">{b.label}</span>
+                </button>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Track Picker Drawer */}
+        {pickingTrack && (
+          <div className="max-h-56 overflow-y-auto p-3 rounded-2xl bg-black/85 backdrop-blur border border-white/15 space-y-1.5">
+            <p className="text-xs font-semibold text-text-secondary mb-1">
+              Choose a song to spin or add to the room queue
+            </p>
+            {allTracks.map((t) => {
+              const tTheme = getSongTheme(t)
+              return (
+                <div
+                  key={t.id}
+                  className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl hover:bg-white/10 text-xs"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-semibold truncate">{t.title}</span>
+                      <span
+                        className="px-1.5 py-0.5 rounded-full text-[9px] font-mono"
+                        style={{
+                          color: tTheme.primaryColor,
+                          backgroundColor: `${tTheme.primaryColor}20`,
+                        }}
+                      >
+                        {tTheme.name}
+                      </span>
+                    </div>
+                    <span className="text-text-secondary text-[11px] block truncate">
+                      {t.artistName}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {canSpin && (
+                      <button
+                        onClick={() => spinTrack(t)}
+                        className="px-2.5 py-1 rounded-full bg-accent-primary text-[#0B0B0B] text-[11px] font-bold"
+                      >
+                        Spin Now
+                      </button>
+                    )}
+                    <button
+                      onClick={() => addToRoomQueue(t)}
+                      className="px-2.5 py-1 rounded-full bg-white/10 text-white text-[11px] font-semibold"
+                    >
+                      + Queue
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Speakers & Listeners Voice Stage */}
+        <div className="p-3 rounded-2xl bg-black/35 backdrop-blur border border-white/10 space-y-3">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[11px] font-semibold text-white/80 flex items-center gap-1.5 uppercase tracking-wider">
+                <Crown className="w-3.5 h-3.5 text-amber-400" /> Stage Speakers
+              </p>
+              {isHost && raisedHandIds.length > 0 && (
+                <span className="text-[11px] text-amber-300 font-semibold">
+                  {raisedHandIds.length} hand{raisedHandIds.length > 1 ? 's' : ''} raised
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-3 overflow-x-auto pb-1">
+              {peers
+                .filter((p) => p.userId === room?.hostId || speakerIds.includes(p.userId))
+                .map((p, idx) => {
+                  const speaking = activeSpeakers.has(p.userId)
+                  const pIsHost = p.userId === room?.hostId
+                  return (
+                    <div
+                      key={p.userId || idx}
+                      onClick={() => {
+                        if (isHost && !pIsHost) revokeSpeaker(p.userId)
+                      }}
+                      className="flex flex-col items-center shrink-0 w-16 cursor-pointer"
+                    >
+                      <div
+                        className={`relative w-12 h-12 rounded-full flex items-center justify-center text-xs font-bold text-black transition-all ${
+                          speaking ? 'ring-4 ring-accent-primary scale-105' : 'ring-2 ring-white/20'
+                        }`}
+                        style={{ background: fallbackCover(p.name || 'S') }}
+                      >
+                        {p.avatar ? (
+                          <img
+                            src={p.avatar}
+                            alt={p.name}
+                            className="w-full h-full rounded-full object-cover"
+                          />
+                        ) : (
+                          (p.name || 'S')[0]
+                        )}
+                        {pIsHost && (
+                          <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-400 text-black flex items-center justify-center">
+                            <Crown className="w-2.5 h-2.5" />
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-white/90 truncate w-full text-center mt-1">
+                        {p.name || 'Speaker'}
+                      </span>
+                    </div>
+                  )
+                })}
+            </div>
+          </div>
+
+          {peers.some((p) => p.userId !== room?.hostId && !speakerIds.includes(p.userId)) && (
+            <div>
+              <p className="text-[10px] font-semibold text-white/60 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                <Users className="w-3 h-3" /> Listeners
+              </p>
+              <div className="flex items-center gap-2.5 overflow-x-auto pb-1">
+                {peers
+                  .filter((p) => p.userId !== room?.hostId && !speakerIds.includes(p.userId))
+                  .map((p, idx) => {
+                    const handUp = raisedHandIds.includes(p.userId)
+                    return (
+                      <div
+                        key={p.userId || idx}
+                        onClick={() => {
+                          if (isHost && handUp) approveSpeaker(p.userId)
+                        }}
+                        className="flex flex-col items-center shrink-0 w-14 cursor-pointer"
+                      >
+                        <div
+                          className={`relative w-10 h-10 rounded-full flex items-center justify-center text-xs font-bold text-black ${
+                            handUp ? 'ring-2 ring-amber-400' : ''
+                          }`}
+                          style={{ background: fallbackCover(p.name || 'L') }}
+                        >
+                          {p.avatar ? (
+                            <img
+                              src={p.avatar}
+                              alt={p.name}
+                              className="w-full h-full rounded-full object-cover"
+                            />
+                          ) : (
+                            (p.name || 'L')[0]
+                          )}
+                          {handUp && (
+                            <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-400 text-black flex items-center justify-center text-[10px]">
+                              ✋
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-white/75 truncate w-full text-center mt-1">
+                          {p.name || 'Listener'}
+                        </span>
+                      </div>
+                    )
+                  })}
+              </div>
             </div>
           )}
         </div>
       </div>
+
+      {/* Live Chat Stream */}
+      <div className="my-3 flex-1 max-h-52 overflow-y-auto space-y-2 px-1 relative z-10">
+        {sortedMessages.length === 0 ? (
+          <p className="text-xs text-white/60 text-center py-6">
+            Say hi, request a song, or hit a DJ Soundboard pad!
+          </p>
+        ) : (
+          sortedMessages.map((m) => (
+            <div
+              key={m.id}
+              className="px-3 py-1.5 rounded-2xl bg-black/45 backdrop-blur border border-white/10 text-xs inline-block max-w-full mr-2"
+            >
+              <span className="font-semibold text-accent-primary mr-1.5">{m.senderName}:</span>
+              <span className="text-white/95">{m.text}</span>
+            </div>
+          ))
+        )}
+        <div ref={endRef} />
+      </div>
+
+      {/* Bottom Controls: Emoji Bar + Mic/Hand + Chat Input */}
+      <div className="space-y-2.5 relative z-10">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1 bg-black/45 backdrop-blur px-2.5 py-1.5 rounded-full border border-white/10 overflow-x-auto">
+            <Smile className="w-3.5 h-3.5 text-white/70 mr-1 shrink-0" />
+            {REACTIONS.map((em) => (
+              <button
+                key={em}
+                onClick={() => sendEmoji(em)}
+                className="text-base hover:scale-125 transition-transform px-1"
+              >
+                {em}
+              </button>
+            ))}
+          </div>
+
+          {isSpeaker ? (
+            !joined ? (
+              <button
+                onClick={joinVoice}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-accent-primary text-[#0B0B0B] text-xs font-bold shadow-lg shrink-0"
+              >
+                <Mic className="w-3.5 h-3.5" /> Join Mic
+              </button>
+            ) : (
+              <button
+                onClick={toggleMute}
+                className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-bold shrink-0 ${
+                  muted ? 'bg-white/15 text-white' : 'bg-accent-secondary text-white'
+                }`}
+              >
+                {muted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
+                {muted ? 'Muted' : 'On Air'}
+              </button>
+            )
+          ) : (
+            <button
+              onClick={toggleRaiseHand}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-bold shrink-0 ${
+                hasRaisedHand
+                  ? 'bg-amber-400 text-black'
+                  : 'bg-black/45 border border-white/15 text-white'
+              }`}
+            >
+              <Hand className="w-3.5 h-3.5" />
+              {hasRaisedHand ? 'Hand Raised ✋' : 'Request Mic'}
+            </button>
+          )}
+        </div>
+
+        <form onSubmit={sendChat} className="flex items-center gap-2">
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Chat with the Listen Room..."
+            className="flex-1 px-4 py-2.5 rounded-full bg-black/50 backdrop-blur border border-white/15 text-sm text-white placeholder:text-white/50 focus:outline-none focus:border-accent-primary"
+          />
+          <button
+            type="submit"
+            aria-label="Send chat"
+            className="w-10 h-10 rounded-full bg-accent-primary text-[#0B0B0B] flex items-center justify-center shrink-0"
+          >
+            <Send className="w-4 h-4" />
+          </button>
+        </form>
+      </div>
+
+      {qrOpen && (
+        <QRCard
+          title={room?.name || 'Listen Room'}
+          subtitle={`Live Listen Room · mileymusic.space`}
+          url={shareRoomUrl}
+          onClose={() => setQrOpen(false)}
+        />
+      )}
     </div>
   )
 }

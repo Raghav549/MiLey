@@ -1,20 +1,43 @@
 /**
- * MiLey Platform - Supabase Client Configuration
- * Production-ready backend connection
+ * MiLey Platform - Supabase & Domain Configuration
+ * Official Domain: https://mileymusic.space
  */
 
 import { createClient } from '@supabase/supabase-js'
 
-// Supabase configuration from environment variables
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://your-project.supabase.co'
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'your-anon-key'
+export const APP_DOMAIN = 'https://mileymusic.space'
+export const MILEY_HOST = 'mileymusic.space'
 
-// Create the Supabase client with optimized settings
+export function getAppUrl(path = '') {
+  const base = (import.meta.env.VITE_APP_URL || APP_DOMAIN).replace(/\/+$/, '')
+  if (!path) return base
+  return `${base}${path.startsWith('/') ? path : '/' + path}`
+}
+
+const rawUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim()
+const rawKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim()
+
+// Detect whether real Supabase credentials have been provided
+export const isSupabaseConfigured = Boolean(
+  rawUrl &&
+  rawKey &&
+  rawUrl.startsWith('http') &&
+  !rawUrl.includes('your-project.supabase.co') &&
+  !rawUrl.includes('your-production.supabase.co') &&
+  !rawUrl.includes('xxxxx.supabase.co') &&
+  rawKey !== 'your-anon-key' &&
+  rawKey !== 'your-anon-key-here' &&
+  rawKey !== 'production-anon-key'
+)
+
+const supabaseUrl = isSupabaseConfigured ? rawUrl : 'https://placeholder.mileymusic.space'
+const supabaseAnonKey = isSupabaseConfigured ? rawKey : 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtaWxleW11c2ljLnNwYWNlIiwicm9sZSI6ImFub24ifQ.placeholder'
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: true,
+    autoRefreshToken: isSupabaseConfigured,
+    persistSession: isSupabaseConfigured,
+    detectSessionInUrl: isSupabaseConfigured,
     flowType: 'pkce',
   },
   db: {
@@ -25,28 +48,26 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
       eventsPerSecond: 10,
     },
   },
-  storage: {
-    // Enable automatic retry for uploads
-    retryAttempts: 3,
-  },
 })
 
-// Helper to get the current session
 export async function getSession() {
+  if (!isSupabaseConfigured) return null
   const { data: { session }, error } = await supabase.auth.getSession()
   if (error) throw error
   return session
 }
 
-// Helper to get the current user
 export async function getUser() {
+  if (!isSupabaseConfigured) return null
   const { data: { user }, error } = await supabase.auth.getUser()
   if (error) throw error
   return user
 }
 
-// Auth state change listener
 export function onAuthStateChange(callback) {
+  if (!isSupabaseConfigured) {
+    return { data: { subscription: { unsubscribe: () => {} } } }
+  }
   return supabase.auth.onAuthStateChange((event, session) => {
     callback(event, session)
   })

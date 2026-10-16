@@ -76,7 +76,7 @@ function StatCard({ icon, label, value, accent }) {
 
 function DashboardTab() {
   const { data: channels } = useLiveShared('channels', { limit: 500 })
-  const { data: rooms } = useLiveShared('voice_rooms', { limit: 200 })
+  const { data: rooms } = useLiveShared('rooms', { limit: 200 })
   const { data: reports } = useLiveShared('reports', { limit: 300 })
   const { data: tracks } = useLiveShared('tracks', { order: '-createdAt', limit: 300 })
   const { data: profiles } = useLiveShared('profiles', { order: '-createdAt', limit: 300 })
@@ -397,8 +397,8 @@ function ReportsTab() {
       {reports.map((r) => (
         <div key={r.id} className="card-surface rounded-2xl p-4 flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-sm text-white font-medium capitalize">{r.type} report</p>
-            <p className="text-xs text-white/40 truncate">{JSON.stringify({ trackId: r.trackId, channelId: r.channelId, targetUserId: r.targetUserId, reason: r.reason }).slice(0, 160)}</p>
+            <p className="text-sm text-white font-medium capitalize">{r.targetType || r.type || 'content'} report {r.targetName ? `· ${r.targetName}` : ''}</p>
+            <p className="text-xs text-white/60">{r.reason || 'Reported by user'}{r.notes ? ` — ${r.notes}` : ''}</p>
             <p className="text-[10px] text-white/25 mt-1">{timeAgo(r.createdAt)}</p>
           </div>
           <button onClick={() => dismiss(r.id)} className="p-2 text-white/40 shrink-0"><TrashIcon size={16} /></button>

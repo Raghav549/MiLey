@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 48 48" fill="none">
+  <rect width="48" height="48" rx="12" fill="#0B0B0B"/>
+  <defs>
+    <linearGradient id="mileyGrad" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#00E0A8"/>
+      <stop offset="1" stop-color="#FF3DAE"/>
+    </linearGradient>
+  </defs>
+  <circle cx="24" cy="24" r="19" stroke="url(#mileyGrad)" stroke-width="2.4"/>
+  <path d="M24 33c-5.5-2.8-8.2-7.3-8.2-11.8a5.5 5.5 0 0 1 8.2-4.8 5.5 5.5 0 0 1 8.2 4.8c0 4.5-2.7 9-8.2 11.8Z" fill="url(#mileyGrad)"/>
+  <path d="M24 18v8.2" stroke="#0B0B0B" stroke-width="1.8" stroke-linecap="round"/>
+</svg>

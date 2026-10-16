@@ -1,8 +1,22 @@
 /**
  * MiLey Platform - Messaging Module
- * Real Supabase implementation for messaging features
- * This module re-exports from social.js for backwards compatibility
+ * Full DM & Group Chat Messaging Engine
  */
+
+import {
+  sendMessage,
+  getMessages,
+  markMessageRead,
+  getUnreadCount,
+  getOrCreateDMChannel,
+  createGroupChannel,
+  getUserChannels,
+  joinChannel,
+  leaveChannel,
+} from './social'
+import { db } from './db'
+import { realtime } from './realtime'
+import { auth } from './auth'
 
 export {
   sendMessage,
@@ -13,227 +27,109 @@ export {
   getUserChannels,
   joinChannel,
   leaveChannel,
-} from './social'
+}
 
-// Additional messaging helpers
+export async function getChannels() {
+  return getUserChannels()
+}
 
-import { supabase } from './supabaseClient'
-import { auth } from './auth'
+export async function createDM(otherUserId) {
+  return getOrCreateDMChannel(otherUserId)
+}
 
-// Send typing indicator
+export async function createGroup(opts) {
+  return createGroupChannel(opts)
+}
+
+export async function send(channelId, payload) {
+  return sendMessage(channelId, payload)
+}
+
+export function onMessage(channelId, callback) {
+  const unsub = db.subscribeShared('dm_messages', (ev) => {
+    if (ev.type === 'INSERT' && ev.data && ev.data.channelId === channelId) {
+      callback(ev.data)
+    }
+  }, { channelId })
+  return {
+    unsubscribe: () => {
+      if (typeof unsub === 'function') unsub()
+      else unsub?.unsubscribe?.()
+    },
+  }
+}
+
 export async function sendTypingIndicator(channelId, isTyping = true) {
   const user = auth.getCurrentUser()
   if (!user) return
-
-  try {
-    await supabase.channel(`typing:${channelId}`).send({
-      type: 'broadcast',
-      event: 'typing',
-      payload: {
-        userId: user.id,
-        isTyping,
-        timestamp: Date.now(),
-      },
-    })
-  } catch (error) {
-    console.error('Send typing error:', error)
-  }
-}
-
-// Listen for typing indicators
-export function listenToTyping(channelId, callback) {
-  const channel = supabase.channel(`typing:${channelId}`)
-
-  channel.on('broadcast', { event: 'typing' }, (payload) => {
-    callback(payload.payload)
+  await realtime.broadcast(`typing:${channelId}`, {
+    userId: user.id,
+    isTyping,
+    timestamp: Date.now(),
   })
-
-  channel.subscribe()
-
-  return () => {
-    supabase.removeChannel(`typing:${channelId}`)
-  }
 }
 
-// Mark all messages in channel as read
+export function listenToTyping(channelId, callback) {
+  return realtime.listenToBroadcasts(`typing:${channelId}`, callback)
+}
+
 export async function markChannelRead(channelId) {
   const user = auth.getCurrentUser()
-  if (!user) throw new Error('Authentication required')
-
-  try {
-    // Get latest message
-    const { data: latestMessage } = await supabase
-      .from('messages')
-      .select('id')
-      .eq('channel_id', channelId)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single()
-
-    if (latestMessage) {
-      await supabase
-        .from('message_reads')
-        .upsert({
-          message_id: latestMessage.id,
-          channel_id: channelId,
-          user_id: user.id,
-          read_at: new Date().toISOString(),
-        })
-    }
-
-    return true
-  } catch (error) {
-    console.error('Mark channel read error:', error)
-    throw error
-  }
+  if (!user) return false
+  const id = `${channelId}_${user.id}`
+  await db.upsertShared('message_reads', {
+    channelId,
+    userId: user.id,
+    lastReadAt: new Date().toISOString(),
+  }, id)
+  return true
 }
 
-// Delete a message (soft delete)
 export async function deleteMessage(messageId) {
-  const user = auth.getCurrentUser()
-  if (!user) throw new Error('Authentication required')
-
-  try {
-    const { error } = await supabase
-      .from('messages')
-      .update({ deleted: true, text: '[Deleted]' })
-      .eq('id', messageId)
-      .eq('sender_id', user.id)
-
-    if (error) throw error
-    return true
-  } catch (error) {
-    console.error('Delete message error:', error)
-    throw error
-  }
+  await db.updateShared('dm_messages', messageId, { deleted: true, content: '[Deleted]', text: '[Deleted]' })
+  return true
 }
 
-// Edit a message
 export async function editMessage(messageId, newText) {
-  const user = auth.getCurrentUser()
-  if (!user) throw new Error('Authentication required')
-
-  try {
-    const { data, error } = await supabase
-      .from('messages')
-      .update({ 
-        text: newText, 
-        edited: true,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', messageId)
-      .eq('sender_id', user.id)
-      .select()
-      .single()
-
-    if (error) throw error
-    return data
-  } catch (error) {
-    console.error('Edit message error:', error)
-    throw error
-  }
+  return db.updateShared('dm_messages', messageId, {
+    content: newText,
+    text: newText,
+    edited: true,
+  })
 }
 
-// Send media message (image, audio, video)
 export async function sendMediaMessage(channelId, fileUrl, fileType, options = {}) {
-  const user = auth.getCurrentUser()
-  if (!user) throw new Error('Authentication required')
-
-  try {
-    const { data, error } = await supabase
-      .from('messages')
-      .insert({
-        channel_id: channelId,
-        sender_id: user.id,
-        text: options.caption || null,
-        type: fileType, // 'image', 'audio', 'video', 'file'
-        media_url: fileUrl,
-        created_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-    
-    // Update channel last message
-    await supabase
-      .from('channels')
-      .update({
-        last_message_at: new Date().toISOString(),
-        last_message_text: `[${fileType}] ${options.caption || ''}`,
-      })
-      .eq('id', channelId)
-
-    return data
-  } catch (error) {
-    console.error('Send media message error:', error)
-    throw error
-  }
+  return sendMessage(channelId, {
+    type: fileType,
+    content: options.caption || `[${fileType}]`,
+    metadata: { [`${fileType}Url`]: fileUrl },
+  })
 }
 
-// Get message reactions (if implemented)
 export async function getMessageReactions(messageId) {
-  try {
-    const { data, error } = await supabase
-      .from('message_reactions')
-      .select('*, user:user_id(id, display_name, avatar_url)')
-      .eq('message_id', messageId)
-
-    if (error) throw error
-    return data || []
-  } catch (error) {
-    console.error('Get reactions error:', error)
-    return []
-  }
+  return db.selectShared('message_reactions', { messageId })
 }
 
-// Add reaction to message
 export async function addReaction(messageId, emoji) {
   const user = auth.getCurrentUser()
-  if (!user) throw new Error('Authentication required')
-
-  try {
-    const { data, error } = await supabase
-      .from('message_reactions')
-      .insert({
-        message_id: messageId,
-        user_id: user.id,
-        emoji: emoji,
-        created_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-    return data
-  } catch (error) {
-    console.error('Add reaction error:', error)
-    throw error
-  }
+  if (!user) return null
+  const id = `${messageId}_${user.id}_${emoji}`
+  return db.upsertShared('message_reactions', { messageId, userId: user.id, emoji }, id)
 }
 
-// Remove reaction from message
 export async function removeReaction(messageId, emoji) {
   const user = auth.getCurrentUser()
-  if (!user) throw new Error('Authentication required')
-
-  try {
-    const { error } = await supabase
-      .from('message_reactions')
-      .delete()
-      .eq('message_id', messageId)
-      .eq('user_id', user.id)
-      .eq('emoji', emoji)
-
-    if (error) throw error
-    return true
-  } catch (error) {
-    console.error('Remove reaction error:', error)
-    throw error
-  }
+  if (!user) return true
+  const id = `${messageId}_${user.id}_${emoji}`
+  return db.deleteShared('message_reactions', id)
 }
 
 export const messaging = {
+  getChannels,
+  createDM,
+  createGroup,
+  send,
+  onMessage,
   sendMessage,
   getMessages,
   markMessageRead,

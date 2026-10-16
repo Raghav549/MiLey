@@ -1,130 +1,101 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import * as lucideIcons from 'lucide-react'
 
-// Rewrites `import { MaybeInvalid } from 'lucide-react'` into a namespace
-// import with per-icon fallback so AI-hallucinated icon names don't crash the app.
-function lucideSafeImport() {
+const REACT_HOOKS = ['useState', 'useEffect', 'useCallback', 'useMemo', 'useRef', 'useContext', 'createContext']
+
+// Automatically inject missing React hook imports if referenced in JSX/JS files
+function reactHooksAutoImport() {
   return {
-    name: 'lucide-safe-import',
+    name: 'react-hooks-auto-import',
     transform(code, id) {
-      if (!/\.[jt]sx?$/.test(id) || id.includes('node_modules')) return
-      const re = /import\s*\{\s*([^}]+)\s*\}\s*from\s*['"]lucide-react['"]/g
-      if (!re.test(code)) return
-      re.lastIndex = 0
-
-      const bindings = []
-      const cleaned = code.replace(re, (_, nameList) => {
-        for (const raw of nameList.split(',')) {
-          const trimmed = raw.trim()
-          if (!trimmed) continue
-          const [orig, alias] = trimmed.split(/\s+as\s+/).map(s => s.trim())
-          bindings.push({ orig, alias: alias || orig })
-        }
-        return ''
+      if (!/\/src\/.*\.(jsx?|tsx?)$/.test(id)) return null
+      const missing = REACT_HOOKS.filter(hook => {
+        if (!new RegExp(`\\b${hook}\\s*\\(`).test(code)) return false
+        const importedRe = new RegExp(`import\\s+[^;]*\\b${hook}\\b[^;]*from\\s+['"]react['"]`)
+        const destructuredRe = new RegExp(`(?:const|let|var)\\s+\\{[^}]*\\b${hook}\\b[^}]*\\}\\s*=\\s*React\\b`)
+        const definedRe = new RegExp(`(?:function\\s+${hook}\\b|(?:const|let|var)\\s+${hook}\\s*=)`)
+        return !importedRe.test(code) && !destructuredRe.test(code) && !definedRe.test(code)
       })
-
-      if (!bindings.length) return
-      const header = `import * as __lucide from 'lucide-react';\n` +
-        bindings.map(b => `const ${b.alias} = __lucide["${b.orig}"] || __lucide.Circle;`).join('\n') + '\n'
-      return { code: header + cleaned, map: null }
+      if (missing.length === 0) return null
+      return { code: `import { ${missing.join(', ')} } from 'react';\n` + code, map: null }
     },
   }
 }
 
-// Auto-injects missing React hook imports in AI-generated code.
-// Same defensive pattern as lucideSafeImport — if the AI writes useRef()
-// but forgets to add it to the import statement, this plugin patches it at build time.
-function reactHooksAutoImport() {
-  const HOOKS = [
-    'useState', 'useEffect', 'useRef', 'useCallback', 'useMemo',
-    'useContext', 'useReducer', 'useLayoutEffect', 'useId',
-    'useTransition', 'useDeferredValue', 'useImperativeHandle',
-    'useInsertionEffect', 'useSyncExternalStore', 'useDebugValue',
-    'memo', 'forwardRef', 'createContext', 'lazy', 'Suspense',
-  ]
-  const HOOK_CALL = HOOKS.map(h => `\\b${h}\\b`).join('|')
-  const HOOK_RE = new RegExp(HOOK_CALL, 'g')
+const LUCIDE_EXPORTS = new Set(Object.keys(lucideIcons))
 
+function lucideSafeImport() {
   return {
-    name: 'react-hooks-auto-import',
+    name: 'lucide-safe-import',
     transform(code, id) {
-      if (!/\.[jt]sx?$/.test(id) || id.includes('node_modules')) return
-
-      const used = new Set()
-      for (const m of code.matchAll(HOOK_RE)) used.add(m[0])
-      if (!used.size) return
-
-      const importRe = /import\s+(?:(\w+)\s*,\s*)?\{\s*([^}]*)\}\s*from\s*['"]react['"]/
-      const importReG = new RegExp(importRe.source, 'g')
-      const defaultImportRe = /import\s+(\w+)\s+from\s*['"]react['"]/
-
-      const allMatches = [...code.matchAll(importReG)]
-      const firstMatch = allMatches[0] || null
-      const defaultMatch = !firstMatch && code.match(defaultImportRe)
-
-      const alreadyImported = new Set()
-      for (const m of allMatches) {
-        for (const name of m[2].split(',')) {
-          const t = name.replace(/\s+as\s+\w+/, '').trim()
-          if (t) alreadyImported.add(t)
+      if (!/\/src\/.*\.(jsx?|tsx?)$/.test(id)) return null
+      if (!code.includes('lucide-react')) return null
+      let changed = false
+      const newCode = code.replace(
+        /import\s*\{([^}]+)\}\s*from\s*['"]lucide-react['"]/g,
+        (match, specifiers) => {
+          const valid = []
+          const stubs = []
+          for (const raw of specifiers.split(',')) {
+            const s = raw.trim()
+            if (!s) continue
+            const parts = s.split(/\s+as\s+/)
+            const imported = parts[0].trim()
+            const local = (parts[1] || parts[0]).trim()
+            if (LUCIDE_EXPORTS.has(imported)) {
+              valid.push(s)
+            } else {
+              stubs.push(local)
+              changed = true
+            }
+          }
+          if (stubs.length === 0) return match
+          const importLine = valid.length > 0 ? `import { ${valid.join(', ')} } from 'lucide-react';` : ''
+          const stubLine = stubs.map(name => `const ${name} = () => null;`).join(' ')
+          return [importLine, stubLine].filter(Boolean).join('\n')
         }
-      }
-
-      const missing = [...used].filter(h => !alreadyImported.has(h))
-      if (!missing.length) return
-
-      if (firstMatch) {
-        const firstNames = new Set()
-        for (const name of firstMatch[2].split(',')) {
-          const t = name.replace(/\s+as\s+\w+/, '').trim()
-          if (t) firstNames.add(t)
-        }
-        const merged = [...new Set([...firstNames, ...missing])]
-        const defaultPart = firstMatch[1] ? `${firstMatch[1]}, ` : ''
-        const newImport = `import ${defaultPart}{ ${merged.join(', ')} } from 'react'`
-        return { code: code.replace(importRe, newImport), map: null }
-      }
-
-      if (defaultMatch) {
-        const newImport = `import ${defaultMatch[1]}, { ${missing.join(', ')} } from 'react'`
-        return { code: code.replace(defaultImportRe, newImport), map: null }
-      }
-
-      // No react import at all — add one
-      return { code: `import { ${missing.join(', ')} } from 'react';\n` + code, map: null }
+      )
+      return changed ? { code: newCode, map: null } : null
     },
   }
 }
 
 export default defineConfig({
   plugins: [reactHooksAutoImport(), lucideSafeImport(), react()],
-  base: process.env.VITE_BASE || '/',
-  cacheDir: './.vite',
-  resolve: {
-    preserveSymlinks: true,
-  },
-  server: {
-    host: true,
-    allowedHosts: true,
-    hmr: false,
-  },
-  // Pre-bundle ALL libraries that generated code may import.
-  // Without this, Vite discovers new imports at runtime, triggers re-optimization,
-  // and invalidates existing chunks — causing 404s in the browser.
   optimizeDeps: {
     include: [
       'react',
       'react-dom',
-      'react-dom/client',
       'react-router-dom',
       'lucide-react',
-      'date-fns',
-      'date-fns/locale',
-      'phaser',
-      'leaflet',
-      'react-leaflet',
-      'qrcode.react',
-      '@supabase/supabase-js',
     ],
+  },
+  build: {
+    chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom'],
+          icons: ['lucide-react'],
+          supabase: ['@supabase/supabase-js'],
+        },
+      },
+    },
+  },
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    strictPort: true,
+    allowedHosts: true,
+    cors: true,
+    hmr: {
+      overlay: false,
+    },
+  },
+  preview: {
+    host: '0.0.0.0',
+    port: 4173,
+    allowedHosts: true,
   },
 })

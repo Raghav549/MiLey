@@ -63,10 +63,10 @@ export default function PlaylistDetail() {
           <button onClick={() => setShowEdit(true)} className="absolute top-[calc(env(safe-area-inset-top,0px)+0.75rem)] right-4 w-10 h-10 rounded-full bg-black/40 backdrop-blur flex items-center justify-center text-white"><EditIcon size={18} /></button>
         )}
         <div className="absolute bottom-4 left-5 right-5 flex items-end gap-4">
-          <div className="w-24 h-24 shrink-0"><Cover track={{ coverUrl: playlist.coverUrl, title: playlist.title }} size="fill" rounded="rounded-2xl" /></div>
+          <div className="w-24 h-24 shrink-0"><Cover track={{ coverUrl: playlist.coverUrl, title: playlist.title || playlist.name }} size="fill" rounded="rounded-2xl" /></div>
           <div className="min-w-0 pb-1">
             <p className="text-xs text-white/60 uppercase tracking-wide">Playlist · {visLabel}</p>
-            <h1 className="font-display font-bold text-2xl text-white truncate">{playlist.title}</h1>
+            <h1 className="font-display font-bold text-2xl text-white truncate">{playlist.title || playlist.name}</h1>
             <p className="text-sm text-white/60 truncate">By {playlist.ownerName || 'MiLey user'}</p>
           </div>
         </div>

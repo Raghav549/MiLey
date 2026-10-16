@@ -1,21 +1,29 @@
 /**
- * Whacka client SDK — download (stub)
- *
- * The implementation runs on the Whacka platform and is provided to your app at
- * runtime; it is intentionally NOT part of this export. This stub only keeps
- * your imports resolving and documents which Whacka APIs your code uses. Your
- * own code (components, pages, hooks) is the real, complete export. See README.
+ * MiLey Platform - File Download Utility
  */
 
-const __wk = (path) =>
-  new Proxy(function () {}, {
-    get: (_t, prop) =>
-      typeof prop === 'symbol' || prop === 'then' ? undefined : __wk(path + '.' + prop),
-    apply: () => {
-      throw new Error(
-        '`' + path + '` runs on the Whacka platform and is not available in exported code.'
-      );
-    },
-  });
+import { resolveMediaUrl } from './localBackend'
 
-export const download = __wk('download');
+export async function saveFile(url, filename = 'miley-track.wav') {
+  if (!url) return false
+  try {
+    const resolved = await resolveMediaUrl(url)
+    const a = document.createElement('a')
+    a.href = resolved
+    a.download = filename
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    return true
+  } catch (e) {
+    window.open(url, '_blank')
+    return false
+  }
+}
+
+export const download = {
+  saveFile,
+}
+
+export default download
